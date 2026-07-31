@@ -683,22 +683,56 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     return { mode: 'downloaded', name, size: blob.size, type: blob.type };
   }
 
-  // The keepsake copy: full backing-store PNG, out through the share sheet
-  // where files can be shared (iOS "Save Image" → Photos), a plain download
-  // everywhere else. Resolves to what happened so agent checks can assert it.
+  function shareBlob(blob, name) {
+    const file = new File([blob], name, { type: 'image/png' });
+    if (!(navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share)) {
+      return Promise.resolve(downloadBlob(blob, name));
+    }
+    return navigator.share({ files: [file] }).then(
+      () => ({ mode: 'shared', name, size: blob.size, type: blob.type }),
+      (error) => (error && error.name === 'AbortError'
+        ? { mode: 'canceled', name, size: blob.size, type: blob.type }
+        : downloadBlob(blob, name)),
+    );
+  }
+
+  const keepsakeOverlay = document.querySelector('#keepsake');
+  const keepsakeImage = document.querySelector('#keepsake-image');
+  const keepsakeShareButton = document.querySelector('#keepsake-share');
+  const keepsakeDownloadButton = document.querySelector('#keepsake-download');
+  const keepsakeCloseButton = document.querySelector('#keepsake-close');
+  let keepsakeState = null;
+
+  function closeKeepsake() {
+    if (!keepsakeState) return;
+    URL.revokeObjectURL(keepsakeState.url);
+    keepsakeState = null;
+    keepsakeImage.removeAttribute('src');
+    keepsakeOverlay.hidden = true;
+  }
+
+  function openKeepsake(blob, name) {
+    closeKeepsake();
+    keepsakeState = { blob, name, url: URL.createObjectURL(blob) };
+    keepsakeImage.src = keepsakeState.url;
+    // The Share button only earns its spot where the share sheet exists.
+    keepsakeShareButton.hidden = !(navigator.canShare
+      && navigator.canShare({ files: [new File([blob], name, { type: 'image/png' })] }));
+    keepsakeOverlay.hidden = false;
+    return { mode: 'presented', name, size: blob.size, type: blob.type };
+  }
+
+  // The keepsake copy: full backing-store PNG. On touch devices it opens as a
+  // plain <img> overlay, because a long-press on an image is the one path to
+  // "Add to Photos" that iOS always offers — the share sheet only sometimes
+  // lists Save Image, and Files/Drive is not where paintings belong. Share and
+  // Download ride along as overlay buttons. Desktop downloads directly.
+  // Resolves to what happened so agent checks can assert it.
   function saveToDevice() {
     return new Promise((resolve) => { canvas.toBlob(resolve, 'image/png'); }).then((blob) => {
       if (!blob) return { mode: 'failed', name: '', size: 0, type: '' };
       const name = exportFilename(new Date());
-      const file = new File([blob], name, { type: 'image/png' });
-      if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
-        return navigator.share({ files: [file] }).then(
-          () => ({ mode: 'shared', name, size: blob.size, type: blob.type }),
-          (error) => (error && error.name === 'AbortError'
-            ? { mode: 'canceled', name, size: blob.size, type: blob.type }
-            : downloadBlob(blob, name)),
-        );
-      }
+      if (window.matchMedia('(pointer: coarse)').matches) return openKeepsake(blob, name);
       return downloadBlob(blob, name);
     });
   }
@@ -741,6 +775,16 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   if (undoButton) undoButton.addEventListener('click', undoCanvas);
   saveButton.addEventListener('click', () => { void slotStore.save(); });
   if (saveDeviceButton) saveDeviceButton.addEventListener('click', () => { void saveToDevice(); });
+  keepsakeShareButton.addEventListener('click', () => {
+    if (keepsakeState) void shareBlob(keepsakeState.blob, keepsakeState.name);
+  });
+  keepsakeDownloadButton.addEventListener('click', () => {
+    if (keepsakeState) downloadBlob(keepsakeState.blob, keepsakeState.name);
+  });
+  keepsakeCloseButton.addEventListener('click', closeKeepsake);
+  keepsakeOverlay.addEventListener('click', (event) => {
+    if (event.target === keepsakeOverlay) closeKeepsake();
+  });
   clearTrayButton.addEventListener('click', clearTray);
   pickerSpectrum.addEventListener('pointerdown', (event) => {
     pickerPointerActive = true;

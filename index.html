@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Splotchbox</title>
     <!-- splotchbox-deploy-marker: 2026-07-30.4 -->
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="apple-touch-icon" href="apple-touch-icon.png">
     <link rel="stylesheet" href="styles.css">
   </head>
   <body>
@@ -102,6 +104,17 @@
         </section>
       </div>
     </main>
+    <div id="keepsake" class="keepsake" hidden>
+      <div class="keepsake-card" role="dialog" aria-label="Save your painting">
+        <img id="keepsake-image" alt="Your painting, ready to save">
+        <p class="keepsake-hint">Touch and hold the picture, then tap <strong>Add&nbsp;to&nbsp;Photos</strong>.</p>
+        <div class="keepsake-actions">
+          <button id="keepsake-share" type="button">Share</button>
+          <button id="keepsake-download" type="button">Download</button>
+          <button id="keepsake-close" type="button">Done</button>
+        </div>
+      </div>
+    </div>
     <div id="brush-cursor" class="brush-cursor" aria-hidden="true"></div>
     <script type="module" src="js/main.js"></script>
   </body>

@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- Painter's palette in the Splotchbox tin colors. -->
+  <path fill="#f7c96f" stroke="#c98a3e" stroke-width="3" fill-rule="evenodd" d="M32 3C15.4 3 3 15.6 3 31.5 3 47.6 16.2 61 32.5 61c6.9 0 10.9-3.4 10.9-7.6 0-3.5-2.6-4.9-2.6-7.4 0-2.9 2.5-4.2 6.7-4.7C55.3 40.4 61 37.1 61 29 61 14.4 47.9 3 32 3Zm-1.5 46.5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z"/>
+  <circle cx="17.5" cy="23" r="5.4" fill="#ef5350" stroke="#b23c3a" stroke-width="1.6"/>
+  <circle cx="32.5" cy="14.5" r="5.4" fill="#ffd54f" stroke="#c99b2c" stroke-width="1.6"/>
+  <circle cx="47" cy="22.5" r="5.4" fill="#338bd5" stroke="#25659c" stroke-width="1.6"/>
+  <circle cx="15.5" cy="38.5" r="5.4" fill="#81c784" stroke="#579a5a" stroke-width="1.6"/>
+  <circle cx="30" cy="33.5" r="5.4" fill="#ba68c8" stroke="#8a4a96" stroke-width="1.6"/>
+</svg>
