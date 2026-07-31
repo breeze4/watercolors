@@ -12,9 +12,13 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
 .wordmark-letter { display: inline-grid; width: clamp(29px, 3.3vw, 44px); height: clamp(33px, 3.7vw, 49px); margin-left: -3px; place-items: center; color: #fffdf6; font-size: clamp(1.45rem, 2.5vw, 2.18rem); font-weight: 950; line-height: 1; text-shadow: 0 2px 0 rgba(65, 37, 58, .18); transform: rotate(var(--tilt)); background: var(--paint); border-radius: var(--blob); }
 .wordmark-letter:first-child { margin-left: 0; }
 .tin-layout { display: flex; flex: 1 1 auto; min-height: 0; gap: clamp(10px, 1.5vw, 20px); }
-.canvas-lid { position: relative; display: flex; flex: 1.35 1 0; min-width: 0; min-height: 0; padding: clamp(10px, 1.8vw, 20px); overflow: hidden; border: 5px solid #e2a858; border-radius: 32px 38px 31px 42px / 35px 34px 40px 30px; background: linear-gradient(145deg, #ffe4a7, #e8aa5a 52%, #cb823e); box-shadow: inset 0 2px 0 rgba(255,255,255,.55), inset 0 -5px 0 rgba(125, 74, 30, .15), 0 10px 18px var(--shadow); }
+.canvas-lid { position: relative; display: flex; flex: 1.35 1 0; min-width: 0; min-height: 0; --lid-pad: clamp(10px, 1.8vw, 20px); padding: var(--lid-pad); overflow: hidden; border: 5px solid #e2a858; border-radius: 32px 38px 31px 42px / 35px 34px 40px 30px; background: linear-gradient(145deg, #ffe4a7, #e8aa5a 52%, #cb823e); box-shadow: inset 0 2px 0 rgba(255,255,255,.55), inset 0 -5px 0 rgba(125, 74, 30, .15), 0 10px 18px var(--shadow); }
 .canvas-lid::before { position: absolute; inset: 12px; z-index: 0; content: ""; opacity: .58; pointer-events: none; border-radius: 20px 27px 18px 25px / 25px 18px 26px 22px; background: repeating-linear-gradient(0deg, rgba(112,82,51,.045) 0 1px, transparent 1px 4px), repeating-linear-gradient(90deg, rgba(255,255,255,.21) 0 1px, transparent 1px 5px), #fffdf7; }
-#paint-canvas { position: relative; z-index: 1; display: block; flex: 1 1 auto; min-width: 0; min-height: 0; width: 100%; border: 2px solid rgba(133, 85, 44, .18); border-radius: 20px 27px 18px 25px / 25px 18px 26px 22px; background-color: var(--paper); touch-action: none; cursor: none; box-shadow: inset 0 0 24px rgba(148, 103, 58, .06); }
+/* Absolutely positioned so the backing store (attribute size = dpr× the CSS size)
+   can never feed back into layout: in the content-sized flex column an in-flow
+   canvas stretches itself dpr× taller than measured and touches land below the
+   pointer. Replaced elements don't stretch from inset alone, hence the calcs. */
+#paint-canvas { position: absolute; top: var(--lid-pad); left: var(--lid-pad); width: calc(100% - 2 * var(--lid-pad)); height: calc(100% - 2 * var(--lid-pad)); z-index: 1; display: block; border: 2px solid rgba(133, 85, 44, .18); border-radius: 20px 27px 18px 25px / 25px 18px 26px 22px; background-color: var(--paper); touch-action: none; cursor: none; box-shadow: inset 0 0 24px rgba(148, 103, 58, .06); }
 .canvas-wash { position: absolute; z-index: 2; inset: 12px; pointer-events: none; opacity: 0; border-radius: inherit; background: linear-gradient(105deg, transparent 15%, rgba(106, 187, 218, .08) 32%, rgba(255, 207, 96, .28) 49%, rgba(239, 119, 141, .12) 65%, transparent 82%); transform: translateX(-130%) rotate(-4deg); }
 .canvas-wash.is-washing { animation: paper-wash 560ms cubic-bezier(.25,.9,.32,1) both; }
 .tin-base { display: flex; flex: .88 1 0; min-width: 300px; min-height: 0; padding: clamp(12px, 1.8vw, 22px); overflow: auto; border: 5px solid #d99847; border-radius: 38px 30px 41px 32px / 31px 42px 30px 39px; background: linear-gradient(145deg, #ffd983, #f5b85e 57%, #dc9348); box-shadow: inset 0 2px 0 rgba(255,255,255,.55), inset 0 -5px 0 rgba(123, 68, 24, .14), 0 10px 18px var(--shadow); }
@@ -65,7 +69,7 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
   .studio-masthead { gap: 7px; }
   .wordmark-letter { width: 28px; height: 33px; font-size: 1.42rem; }
   .tin-layout { flex-direction: column; gap: 8px; }
-  .canvas-lid { flex: 1 1 53vh; min-height: 53vh; padding: 8px; border-width: 4px; border-radius: 25px 30px 23px 32px / 28px 25px 32px 23px; }
+  .canvas-lid { flex: 1 1 53vh; min-height: 53vh; --lid-pad: 8px; padding: var(--lid-pad); border-width: 4px; border-radius: 25px 30px 23px 32px / 28px 25px 32px 23px; }
   .canvas-lid::before { inset: 8px; }
   .canvas-wash { inset: 8px; }
   .tin-base { flex: 0 0 auto; min-width: 0; max-height: 39vh; padding: 9px; border-width: 4px; }
