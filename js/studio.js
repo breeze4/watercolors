@@ -594,6 +594,9 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     // resizing to that would destroy the painting. Keep the backing store and
     // remeasure when the layout comes back.
     if (bounds.width < 2 || bounds.height < 2) return;
+    // A stroke can't meaningfully continue across a relayout, and a dropped
+    // pointerup would otherwise leave it (and the brush sound) stuck open.
+    cancelActiveStroke();
     // Capture into the master before the backing store changes; the master
     // never shrinks, so this is what makes shrinks non-destructive.
     writeMaster();
@@ -661,12 +664,24 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   function finishPointer(event) {
     if (event.pointerId !== activePointerId) return;
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    endActiveStroke();
+  }
+
+  function endActiveStroke() {
     activePointerId = null;
     previousPoint = null;
     engineFor(mainSurface).endStroke();
     renderPressure();
     soundKit.brushEnd();
     hideBrushCursor();
+  }
+
+  // Safety net for strokes whose pointerup never arrives — iPadOS rotation
+  // and app-switching can eat it, which left the brush sound looping and the
+  // ticker pinned forever. A stroke that loses its pointer just ends.
+  function cancelActiveStroke() {
+    if (activePointerId === null) return;
+    endActiveStroke();
   }
 
   function getPixel(x, y) {
@@ -880,6 +895,14 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     if (event.key === '.') setPaint(state.paint + 0.05);
   });
   window.addEventListener('resize', resizeCanvas);
+  // Redundant with the canvas listeners in the normal case (finishPointer
+  // gates on the active pointer id), but catches releases the canvas never
+  // sees — capture lost mid-gesture, fingers lifted over other UI.
+  window.addEventListener('pointerup', finishPointer);
+  window.addEventListener('pointercancel', finishPointer);
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) cancelActiveStroke();
+  });
 
   const api = {
     paintStroke,
