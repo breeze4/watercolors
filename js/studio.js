@@ -699,7 +699,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   canvas.addEventListener('pointerleave', hideBrushCursor);
   clearButton.addEventListener('click', clearCanvasWithUndo);
   if (undoButton) undoButton.addEventListener('click', undoCanvas);
-  saveButton.addEventListener('click', () => slotStore.save());
+  saveButton.addEventListener('click', () => { void slotStore.save(); });
   if (saveDeviceButton) saveDeviceButton.addEventListener('click', () => { void saveToDevice(); });
   clearTrayButton.addEventListener('click', clearTray);
   pickerSpectrum.addEventListener('pointerdown', (event) => {
