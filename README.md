@@ -58,6 +58,15 @@ useful when a home-screen shortcut is serving cached files. If you clone fresh
 and want stamping, recreate the hook: it seds the tag to `v$(date +%Y-%m-%d.%H%M)`
 and `git add`s `index.html`.
 
+Every commit must state its version string (`vYYYY-MM-DD.HHMM`) in the commit
+message, and an agent committing on the owner's behalf must also report that
+string in its chat reply, so a phone showing its corner stamp can be matched to
+a deploy without digging. The hook writes the stamp during the commit, so
+compute it first with the same format, put it in the message, and verify
+afterward that the message matches what landed in `index.html` (a minute
+boundary can make them differ — if so, `git commit --amend --no-verify` the
+message; `--no-verify` so the hook doesn't restamp and reopen the gap).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
