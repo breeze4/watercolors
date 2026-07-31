@@ -623,7 +623,23 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   }
 
   function handlePointerDown(event) {
-    if (activePointerId !== null) return;
+    // Last touch wins: a down while another stroke is active means either a
+    // lost pointerup (whose stale stroke would block painting forever — rapid
+    // stroking on iOS drops ups) or an extra finger. Either way the old
+    // stroke ends and the new one paints.
+    if (activePointerId !== null) cancelActiveStroke();
+    // Self-healing placement: if the canvas box has drifted from the tracked
+    // CSS size or the backing store (a resize measured mid-rotation-animation,
+    // or one we never saw), remeasure before mapping this touch. The master
+    // buffer makes the extra resize lossless.
+    const measured = canvas.getBoundingClientRect();
+    const healDpr = window.devicePixelRatio || 1;
+    if (Math.abs(measured.width - canvasWidth) > 1
+      || Math.abs(measured.height - canvasHeight) > 1
+      || Math.abs(canvas.width / healDpr - measured.width) > 2
+      || Math.abs(canvas.height / healDpr - measured.height) > 2) {
+      resizeCanvas();
+    }
     activePointerId = event.pointerId;
     // Synthetic PointerEvents used by the test API are not always eligible
     // for capture, but should still exercise the same painting path.
@@ -681,6 +697,11 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   // ticker pinned forever. A stroke that loses its pointer just ends.
   function cancelActiveStroke() {
     if (activePointerId === null) return;
+    try {
+      if (canvas.hasPointerCapture(activePointerId)) canvas.releasePointerCapture(activePointerId);
+    } catch (error) {
+      // Synthetic pointers can't always be released; ending the stroke is what matters.
+    }
     endActiveStroke();
   }
 
@@ -894,7 +915,18 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     if (event.key === ',') setPaint(state.paint - 0.05);
     if (event.key === '.') setPaint(state.paint + 0.05);
   });
-  window.addEventListener('resize', resizeCanvas);
+  // iPadOS animates rotation and can fire resize while the layout is still
+  // transitional; a single immediate measurement bakes in a stale size and
+  // paints land offset from the finger. Measure now and again after settling.
+  let resizeSettleTimer = null;
+  window.addEventListener('resize', () => {
+    resizeCanvas();
+    if (resizeSettleTimer !== null) window.clearTimeout(resizeSettleTimer);
+    resizeSettleTimer = window.setTimeout(() => {
+      resizeSettleTimer = null;
+      resizeCanvas();
+    }, 450);
+  });
   // Redundant with the canvas listeners in the normal case (finishPointer
   // gates on the active pointer id), but catches releases the canvas never
   // sees — capture lost mid-gesture, fingers lifted over other UI.
