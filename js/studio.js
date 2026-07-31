@@ -1,0 +1,638 @@
+// Studio assembly: paint state, DOM wiring, pointer and keyboard handling, and
+// the window.studio verification surface. Engines live in their own modules.
+// This file has to stand alone on a backend-free host, so it owns only the
+// studio markup and never reaches for DOM the paint-along layer injects.
+
+import { mixColors, normalizeColor } from './color.js';
+import { clampPressure, paintStrokePath, sizePixels } from './brush.js';
+import { engineFor } from './fluid.js';
+import { createSlotStore } from './slots.js';
+import { createSoundKit } from './audio.js';
+import { applyBlobShapes, playWash, spawnPaintSpecks, splatNewestSwatch } from './juice.js';
+
+// The dials span exactly the useful range and nothing more: 100% is the old
+// default effect (as hard or as wet as a stroke ever needs to be), 0% is
+// nothing, and the default sits at the 50% midpoint. Linear in between —
+// every notch of the gauge does real work. Recorded stroke points still
+// carry effective pressure, so replay calibration never moves.
+const PRESSURE_DIAL_DEFAULT = 0.5;
+const WATER_DIAL_DEFAULT = 0.5;
+const PRESSURE_EFFECT_MAX = 0.65;
+const WATER_EFFECT_MAX = 0.5;
+
+function effectivePressure(dial) {
+  return clampPressure(Math.min(1, Math.max(0, dial)) * PRESSURE_EFFECT_MAX);
+}
+
+function effectiveWater(dial) {
+  return Math.min(1, Math.max(0, dial)) * WATER_EFFECT_MAX;
+}
+
+// Racing the brush thins the stroke toward dry-brush; easing in presses more
+// paint out. Speed is px/ms against the event timestamp clock.
+function velocityAdjusted(pressure, distance, elapsed) {
+  if (!Number.isFinite(elapsed) || elapsed <= 0) return pressure;
+  const speed = distance / elapsed;
+  const factor = Math.min(1.12, Math.max(0.55, 1.12 - speed * 0.28));
+  return clampPressure(pressure * factor);
+}
+
+const basePalette = [
+  '#ef5350', '#f48fb1', '#ba68c8', '#7986cb',
+  '#338bd5', '#4db6ac', '#81c784', '#c5d65a',
+  '#ffd54f', '#ffb74d', '#a1887f', '#455a64',
+];
+
+export function createStudio({ onLayoutSettled = () => {} } = {}) {
+  // The paint-along layer loads after the studio is already running, so the
+  // settle hook is replaceable rather than fixed at construction.
+  let layoutSettled = onLayoutSettled;
+
+  const canvas = document.querySelector('#paint-canvas');
+  const clearButton = document.querySelector('#clear-canvas');
+  const undoButton = document.querySelector('#undo-canvas');
+  const saveButton = document.querySelector('#save-canvas');
+  const paletteContainer = document.querySelector('#palette-swatches');
+  const trayContainer = document.querySelector('#tray-swatches');
+  const clearTrayButton = document.querySelector('#clear-tray');
+  const hardnessControls = document.querySelector('#hardness-controls');
+  const sizeControls = document.querySelector('#size-controls');
+  const canvasLid = canvas.closest('.canvas-lid');
+  const washOverlay = document.querySelector('#canvas-wash');
+  const brushCursor = document.querySelector('#brush-cursor');
+  const context = canvas.getContext('2d', { willReadFrequently: true });
+
+  const state = {
+    color: '#4a90c2',
+    hardness: 3,
+    size: 'm',
+    pressure: PRESSURE_DIAL_DEFAULT,
+    water: WATER_DIAL_DEFAULT,
+    paint: 0.5,
+    palette: basePalette,
+    tray: [],
+    pendingMixColor: null,
+  };
+  const mainSurface = { canvas, context, dpr: () => window.devicePixelRatio || 1 };
+  const undoStack = [];
+  const undoLimit = 20;
+  const undoBudgetBytes = 40 * 1024 * 1024;
+  let canvasWidth = 0;
+  let canvasHeight = 0;
+  let activePointerId = null;
+  let previousPoint = null;
+  let presentationReady = false;
+  let lastMoveTime = 0;
+  let livePressure = effectivePressure(PRESSURE_DIAL_DEFAULT);
+  let tickerHandle = null;
+
+  // The sim keeps moving while anything is wet: tick and repaint on animation
+  // frames until the paper dries, then stop costing anything.
+  function startTicker() {
+    if (tickerHandle !== null) return;
+    const step = () => {
+      const engine = engineFor(mainSurface);
+      engine.tick(2);
+      engine.render();
+      if (engine.isActive() || activePointerId !== null) {
+        tickerHandle = window.requestAnimationFrame(step);
+      } else {
+        tickerHandle = null;
+      }
+    };
+    tickerHandle = window.requestAnimationFrame(step);
+  }
+
+  const pressureFill = document.querySelector('#pressure-fill');
+  const pressureValue = document.querySelector('#pressure-value');
+
+  // The meter is a control, not a telemetry readout: it holds the set value
+  // steady while painting (velocity still modulates the actual stroke).
+  function renderPressure() {
+    if (pressureFill) pressureFill.style.width = `${Math.round(state.pressure * 100)}%`;
+    if (pressureValue) pressureValue.textContent = `${Math.round(state.pressure * 100)}%`;
+  }
+
+  function setPressure(pressure) {
+    const numeric = Number(pressure);
+    if (!Number.isFinite(numeric)) return false;
+    state.pressure = Math.round(Math.min(1, Math.max(0, numeric)) * 100) / 100;
+    renderPressure();
+    return true;
+  }
+
+  const waterFill = document.querySelector('#water-fill');
+  const waterValue = document.querySelector('#water-value');
+  const paintFill = document.querySelector('#paint-fill');
+  const paintValue = document.querySelector('#paint-value');
+
+  function renderWater() {
+    if (waterFill) waterFill.style.width = `${Math.round(state.water * 100)}%`;
+    if (waterValue) waterValue.textContent = `${Math.round(state.water * 100)}%`;
+  }
+
+  function setWater(water) {
+    const numeric = Number(water);
+    if (!Number.isFinite(numeric)) return false;
+    state.water = Math.round(Math.min(1, Math.max(0, numeric)) * 100) / 100;
+    renderWater();
+    return true;
+  }
+
+  function renderPaint() {
+    if (paintFill) paintFill.style.width = `${Math.round(state.paint * 100)}%`;
+    if (paintValue) paintValue.textContent = `${Math.round(state.paint * 100)}%`;
+  }
+
+  function setPaint(paint) {
+    const numeric = Number(paint);
+    if (!Number.isFinite(numeric)) return false;
+    state.paint = Math.round(Math.min(1, Math.max(0, numeric)) * 100) / 100;
+    renderPaint();
+    return true;
+  }
+
+  // The meters are sliders, not just readouts: tap or drag anywhere on the bar
+  // to set the value — the only way to reach them on a touch screen.
+  function attachMeter(selector, apply) {
+    const meter = document.querySelector(selector);
+    if (!meter) return;
+    const applyFromEvent = (event) => {
+      const bounds = meter.getBoundingClientRect();
+      if (bounds.width < 1) return;
+      apply((event.clientX - bounds.left) / bounds.width);
+      meter.setAttribute('aria-valuenow', meter.querySelector('.pressure-fill')?.style.width || '');
+    };
+    let activePointer = null;
+    meter.addEventListener('pointerdown', (event) => {
+      event.preventDefault();
+      activePointer = event.pointerId;
+      try {
+        meter.setPointerCapture(event.pointerId);
+      } catch (error) {
+        // Capture is an enhancement; a plain tap still sets the value.
+      }
+      applyFromEvent(event);
+    });
+    meter.addEventListener('pointermove', (event) => {
+      if (event.pointerId === activePointer) applyFromEvent(event);
+    });
+    meter.addEventListener('pointerup', (event) => {
+      if (event.pointerId === activePointer) activePointer = null;
+    });
+    meter.addEventListener('pointercancel', (event) => {
+      if (event.pointerId === activePointer) activePointer = null;
+    });
+  }
+
+  // A stylus reports true pressure; mice and trackpads report a constant, so
+  // they fall back to the keyboard-adjustable base pressure. Both ride the same
+  // dial curve, so a light pen touch gets the same fine low range as the keys.
+  function pointerPressure(event) {
+    if (event.pointerType === 'pen' && event.pressure > 0) return effectivePressure(event.pressure);
+    return effectivePressure(state.pressure);
+  }
+
+  function sizeForCursor() {
+    return sizePixels[state.size] * (0.48 + 0.8 * effectivePressure(state.pressure));
+  }
+
+  function updateBrushCursor(event) {
+    if (!brushCursor || window.innerWidth <= 720 || event.pointerType === 'touch') return;
+    const size = sizeForCursor();
+    brushCursor.style.setProperty('--cursor-size', `${size}px`);
+    brushCursor.style.setProperty('--cursor-color', state.color);
+    brushCursor.style.setProperty('--cursor-hardness', String(state.hardness));
+    brushCursor.style.left = `${event.clientX}px`;
+    brushCursor.style.top = `${event.clientY}px`;
+    brushCursor.dataset.color = state.color;
+    brushCursor.dataset.size = state.size;
+    brushCursor.dataset.hardness = String(state.hardness);
+    brushCursor.classList.add('is-visible');
+  }
+
+  function hideBrushCursor() {
+    if (brushCursor) brushCursor.classList.remove('is-visible');
+  }
+
+  function resolveSwatch(swatch) {
+    if (typeof swatch === 'number' && Number.isInteger(swatch)) {
+      return basePalette[swatch] || state.tray[swatch - basePalette.length] || null;
+    }
+    if (swatch && typeof swatch === 'object') return resolveSwatch(swatch.color);
+    const color = normalizeColor(swatch);
+    return color && (basePalette.includes(color) || state.tray.includes(color)) ? color : null;
+  }
+
+  function renderSwatches(container, colors, source) {
+    container.replaceChildren();
+    colors.forEach((color, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'swatch';
+      button.style.backgroundColor = color;
+      button.dataset.color = color;
+      button.dataset.source = source;
+      button.dataset.index = String(index);
+      button.setAttribute('aria-label', `${source === 'palette' ? 'Base' : 'Mixed'} color ${index + 1}`);
+      button.setAttribute('aria-pressed', String(state.color === color));
+      button.addEventListener('click', () => selectSwatch(color));
+      container.append(button);
+    });
+  }
+
+  function renderColorControls() {
+    renderSwatches(paletteContainer, basePalette, 'palette');
+    renderSwatches(trayContainer, state.tray, 'tray');
+    applyBlobShapes();
+  }
+
+  function selectSwatch(swatch) {
+    const color = resolveSwatch(swatch);
+    if (!color) return false;
+    state.color = color;
+    let mixed = false;
+    if (state.pendingMixColor === null) {
+      state.pendingMixColor = color;
+    } else {
+      const mixedColor = mixColors(state.pendingMixColor, color);
+      state.tray.push(mixedColor);
+      state.color = mixedColor;
+      state.pendingMixColor = null;
+      mixed = true;
+    }
+    renderColorControls();
+    if (mixed) {
+      splatNewestSwatch(trayContainer);
+      soundKit.plop();
+    }
+    return true;
+  }
+
+  function mixSwatches(firstSwatch, secondSwatch) {
+    const first = resolveSwatch(firstSwatch);
+    const second = resolveSwatch(secondSwatch);
+    if (!first || !second) return null;
+    state.pendingMixColor = null;
+    selectSwatch(first);
+    selectSwatch(second);
+    return state.color;
+  }
+
+  function clearTray() {
+    const activeWasTrayColor = state.tray.includes(state.color);
+    state.tray = [];
+    state.pendingMixColor = null;
+    if (activeWasTrayColor) state.color = basePalette[0];
+    renderColorControls();
+  }
+
+  function setHardness(hardness) {
+    const value = Number(hardness);
+    if (!Number.isInteger(value) || value < 1 || value > 6) return false;
+    state.hardness = value;
+    renderBrushControls();
+    return true;
+  }
+
+  function setSize(size) {
+    const value = typeof size === 'string' ? size.toLowerCase() : '';
+    // hasOwnProperty over Object.hasOwn: the latter needs iOS 15.4+.
+    if (!Object.prototype.hasOwnProperty.call(sizePixels, value)) return false;
+    state.size = value;
+    renderBrushControls();
+    return true;
+  }
+
+  function renderBrushControls() {
+    hardnessControls.querySelectorAll('[data-hardness]').forEach((button) => {
+      const active = Number(button.dataset.hardness) === state.hardness;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    sizeControls.querySelectorAll('[data-size]').forEach((button) => {
+      const active = button.dataset.size === state.size;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+  }
+
+  function clearCanvas() {
+    context.save();
+    context.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvasWidth, canvasHeight);
+    context.restore();
+    if (presentationReady) playWash(washOverlay);
+  }
+
+  // Undoable clear for the button and API; resizeCanvas keeps the raw clear so
+  // window resizes never spam the undo stack.
+  function clearCanvasWithUndo() {
+    pushUndoSnapshot();
+    engineFor(mainSurface).reset();
+    if (presentationReady) playWash(washOverlay);
+  }
+
+  function updateUndoButton() {
+    if (undoButton) undoButton.disabled = undoStack.length === 0;
+  }
+
+  function pushUndoSnapshot() {
+    if (canvas.width === 0 || canvas.height === 0) return;
+    const snapshot = document.createElement('canvas');
+    snapshot.width = canvas.width;
+    snapshot.height = canvas.height;
+    snapshot.getContext('2d').drawImage(canvas, 0, 0);
+    undoStack.push(snapshot);
+    let bytes = 0;
+    for (let index = undoStack.length - 1; index >= 0; index -= 1) {
+      bytes += undoStack[index].width * undoStack[index].height * 4;
+      const depth = undoStack.length - index;
+      // Bound by memory, not just count, so phone-sized budgets degrade depth
+      // gracefully; the newest snapshot is always kept.
+      if (depth > 1 && (depth > undoLimit || bytes > undoBudgetBytes)) {
+        undoStack.splice(0, index + 1);
+        break;
+      }
+    }
+    updateUndoButton();
+  }
+
+  function undoCanvas() {
+    const snapshot = undoStack.pop();
+    updateUndoButton();
+    if (!snapshot) return false;
+    context.save();
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.fillStyle = '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(snapshot, 0, 0, canvas.width, canvas.height);
+    context.restore();
+    // Undo restores a dried painting: the sim rebuilds deposited pigment from
+    // the snapshot image (full wet-state snapshots would cost tens of MB each).
+    const engine = engineFor(mainSurface);
+    engine.rehydrateFromCanvas();
+    engine.render(true);
+    return true;
+  }
+
+  function resizeCanvas() {
+    const bounds = canvas.getBoundingClientRect();
+    // A hidden canvas (library view hides the studio layout) measures 0×0;
+    // resizing to that would destroy the painting. Keep the backing store and
+    // remeasure when the layout comes back.
+    if (bounds.width < 2 || bounds.height < 2) return;
+    const previousWidth = canvasWidth;
+    const previousHeight = canvasHeight;
+    const previous = document.createElement('canvas');
+    previous.width = canvas.width;
+    previous.height = canvas.height;
+    if (previous.width && previous.height) previous.getContext('2d').drawImage(canvas, 0, 0);
+    const dpr = window.devicePixelRatio || 1;
+    canvasWidth = Math.max(1, Math.round(bounds.width));
+    canvasHeight = Math.max(1, Math.round(bounds.height));
+    canvas.width = Math.round(canvasWidth * dpr);
+    canvas.height = Math.round(canvasHeight * dpr);
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    clearCanvas();
+    // Responsive paint-along relayouts keep the same sheet of paper intact.
+    if (previousWidth && previousHeight) context.drawImage(previous, 0, 0, previousWidth, previousHeight);
+    // The engine rebuilds for the new backing-store size and rehydrates from
+    // the restored image; the fresh render repaints the paper texture.
+    engineFor(mainSurface).render(true);
+  }
+
+  function eventPoint(event) {
+    const bounds = canvas.getBoundingClientRect();
+    return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+  }
+
+  function handlePointerDown(event) {
+    if (activePointerId !== null) return;
+    activePointerId = event.pointerId;
+    // Synthetic PointerEvents used by the test API are not always eligible
+    // for capture, but should still exercise the same painting path.
+    try {
+      canvas.setPointerCapture(event.pointerId);
+    } catch (error) {
+      // Real pointer capture is an interaction enhancement, not a paint gate.
+    }
+    livePressure = pointerPressure(event);
+    previousPoint = { ...eventPoint(event), p: livePressure };
+    state.pendingMixColor = null;
+    pushUndoSnapshot();
+    const engine = engineFor(mainSurface);
+    engine.beginStroke(state.color, state.hardness, sizePixels[state.size], livePressure, effectiveWater(state.water), true, state.paint);
+    engine.addStrokePoint(previousPoint.x, previousPoint.y, livePressure);
+    startTicker();
+    lastMoveTime = event.timeStamp;
+    renderPressure();
+    updateBrushCursor(event);
+    spawnPaintSpecks({ canvas, lid: canvasLid, point: previousPoint, color: state.color });
+  }
+
+  function handlePointerMove(event) {
+    updateBrushCursor(event);
+    if (event.pointerId !== activePointerId || !previousPoint) return;
+    const nextPoint = eventPoint(event);
+    const distance = Math.hypot(nextPoint.x - previousPoint.x, nextPoint.y - previousPoint.y);
+    const elapsed = event.timeStamp - lastMoveTime;
+    livePressure = velocityAdjusted(pointerPressure(event), distance, elapsed);
+    nextPoint.p = livePressure;
+    engineFor(mainSurface).addStrokePoint(nextPoint.x, nextPoint.y, livePressure);
+    previousPoint = nextPoint;
+    lastMoveTime = event.timeStamp;
+    soundKit.brushMove(elapsed > 0 ? distance / elapsed : 0, livePressure, state.hardness);
+    renderPressure();
+  }
+
+  function finishPointer(event) {
+    if (event.pointerId !== activePointerId) return;
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+    activePointerId = null;
+    previousPoint = null;
+    engineFor(mainSurface).endStroke();
+    renderPressure();
+    soundKit.brushEnd();
+    hideBrushCursor();
+  }
+
+  function getPixel(x, y) {
+    const dpr = window.devicePixelRatio || 1;
+    const sampleX = Math.max(0, Math.min(canvas.width - 1, Math.round(x * dpr)));
+    const sampleY = Math.max(0, Math.min(canvas.height - 1, Math.round(y * dpr)));
+    const pixel = context.getImageData(sampleX, sampleY, 1, 1).data;
+    return { r: pixel[0], g: pixel[1], b: pixel[2], a: pixel[3] };
+  }
+
+  function paintStroke(points) {
+    if (!Array.isArray(points) || points.length === 0) return;
+    // Painting on the user's canvas ends a pending mix pick and is undoable.
+    state.pendingMixColor = null;
+    pushUndoSnapshot();
+    paintStrokePath(mainSurface, points, state.color, state.hardness, sizePixels[state.size], effectivePressure(state.pressure), effectiveWater(state.water));
+    engineFor(mainSurface).render();
+    startTicker();
+  }
+
+  const soundKit = createSoundKit();
+
+  const slotStore = createSlotStore({
+    container: document.querySelector('#save-slots'),
+    canvas,
+    context,
+    storageKey: 'splotchbox.save-slots.v1',
+    onBeforeDraw: pushUndoSnapshot,
+    onAfterDraw() {
+      // Loaded paintings come back dry; the sim rehydrates deposited pigment
+      // from the image so new water can still lift and mingle with it.
+      const engine = engineFor(mainSurface);
+      engine.rehydrateFromCanvas();
+      engine.render(true);
+    },
+    onRender: applyBlobShapes,
+  });
+
+  // Entering or leaving the side-by-side workspace changes the canvas's CSS box
+  // without a window resize. The backing store must follow immediately (or
+  // clicks land at the stale scale, offset from the cursor) and once more after
+  // the 340ms panel-arrive animation settles, since its transform skews
+  // getBoundingClientRect measurements taken mid-flight.
+  function scheduleCanvasRelayout() {
+    resizeCanvas();
+    window.setTimeout(() => {
+      resizeCanvas();
+      layoutSettled();
+    }, 400);
+  }
+
+  const soundToggle = document.querySelector('#sound-toggle');
+
+  function renderSoundToggle() {
+    if (!soundToggle) return;
+    soundToggle.textContent = soundKit.isEnabled() ? '🔊 Sound' : '🔇 Muted';
+    soundToggle.setAttribute('aria-pressed', String(soundKit.isEnabled()));
+  }
+
+  if (soundToggle) {
+    soundToggle.addEventListener('click', () => {
+      soundKit.setEnabled(!soundKit.isEnabled());
+      renderSoundToggle();
+    });
+  }
+
+  canvas.addEventListener('pointerdown', handlePointerDown);
+  canvas.addEventListener('pointermove', handlePointerMove);
+  canvas.addEventListener('pointerup', finishPointer);
+  canvas.addEventListener('pointercancel', finishPointer);
+  canvas.addEventListener('pointerenter', updateBrushCursor);
+  canvas.addEventListener('pointerleave', hideBrushCursor);
+  clearButton.addEventListener('click', clearCanvasWithUndo);
+  if (undoButton) undoButton.addEventListener('click', undoCanvas);
+  saveButton.addEventListener('click', () => slotStore.save());
+  clearTrayButton.addEventListener('click', clearTray);
+  hardnessControls.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-hardness]');
+    if (button) setHardness(button.dataset.hardness);
+  });
+  sizeControls.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-size]');
+    if (button) setSize(button.dataset.size);
+  });
+  window.addEventListener('keydown', (event) => {
+    const target = event.target;
+    if (target instanceof Element && (target.matches('input, textarea, select') || target.isContentEditable)) return;
+    if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z') {
+      event.preventDefault();
+      undoCanvas();
+      return;
+    }
+    if (/^[1-6]$/.test(event.key)) setHardness(event.key);
+    // Live pressure control, usable mid-stroke: the next painted segment picks
+    // up the new base pressure immediately.
+    if (event.key === '[') setPressure(state.pressure - 0.05);
+    if (event.key === ']') setPressure(state.pressure + 0.05);
+    // Water and paint are loaded per dip: the next stroke carries the new load.
+    if (event.key === ';') setWater(state.water - 0.05);
+    if (event.key === "'") setWater(state.water + 0.05);
+    if (event.key === ',') setPaint(state.paint - 0.05);
+    if (event.key === '.') setPaint(state.paint + 0.05);
+  });
+  window.addEventListener('resize', resizeCanvas);
+
+  const api = {
+    paintStroke,
+    setHardness,
+    setSize,
+    setPressure,
+    setWater,
+    setPaint,
+    getPixel,
+    clearCanvas: clearCanvasWithUndo,
+    undo: undoCanvas,
+    save: () => slotStore.save(),
+    loadSlot: (index) => slotStore.load(index),
+    deleteSlot: (index) => slotStore.remove(index),
+    getSlots: () => slotStore.getAll(),
+    selectSwatch,
+    mix: mixSwatches,
+    clearTray,
+    mixColors,
+    setSound(enabled) { soundKit.setEnabled(enabled); renderSoundToggle(); },
+    sim: {
+      tick(count = 1) {
+        const engine = engineFor(mainSurface);
+        engine.tick(count);
+        engine.render();
+        return engine.stats();
+      },
+      dryAll() {
+        const engine = engineFor(mainSurface);
+        engine.dryAll();
+        engine.render(true);
+      },
+      isActive: () => engineFor(mainSurface).isActive(),
+      stats: () => engineFor(mainSurface).stats(),
+    },
+    getState() {
+      return {
+        ...state,
+        pressureEffective: effectivePressure(state.pressure),
+        waterEffective: effectiveWater(state.water),
+        palette: [...basePalette],
+        tray: [...state.tray],
+        pendingMix: state.pendingMixColor,
+        sound: soundKit.isEnabled(),
+        mixGesture: 'Each swatch selection activates it; a second selection mixes the pending first pick with it.',
+      };
+    },
+  };
+  window.studio = api;
+
+  renderColorControls();
+  renderBrushControls();
+  renderPressure();
+  renderWater();
+  renderPaint();
+  attachMeter('.pressure-panel:not(.water-panel):not(.paint-panel) .pressure-meter', setPressure);
+  attachMeter('.water-meter', setWater);
+  attachMeter('#paint-meter', setPaint);
+  renderSoundToggle();
+  slotStore.render();
+  updateUndoButton();
+  resizeCanvas();
+  presentationReady = true;
+
+  return {
+    api,
+    canvas,
+    palette: basePalette,
+    soundKit,
+    mainSurface,
+    scheduleRelayout: scheduleCanvasRelayout,
+    setOnLayoutSettled(handler) {
+      layoutSettled = typeof handler === 'function' ? handler : () => {};
+    },
+  };
+}

@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Splotchbox</title>
+    <!-- splotchbox-deploy-marker: 2026-07-30.4 -->
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="studio-shell">
+      <header class="studio-masthead">
+        <h1 class="wordmark" aria-label="Splotchbox">
+          <span class="wordmark-letter" aria-hidden="true" style="--paint:#ef5350;--tilt:-6deg;--blob:43% 57% 48% 52% / 58% 41% 59% 42%">S</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#f48fb1;--tilt:3deg;--blob:58% 42% 54% 46% / 42% 58% 43% 57%">p</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ba68c8;--tilt:-2deg;--blob:45% 55% 59% 41% / 60% 43% 57% 40%">l</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#338bd5;--tilt:4deg;--blob:58% 42% 47% 53% / 45% 58% 42% 55%">o</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#4db6ac;--tilt:-3deg;--blob:42% 58% 52% 48% / 55% 41% 59% 45%">t</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#81c784;--tilt:5deg;--blob:56% 44% 43% 57% / 41% 57% 43% 59%">c</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ffd54f;--tilt:-4deg;--blob:44% 56% 58% 42% / 58% 44% 56% 42%">h</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ffb74d;--tilt:2deg;--blob:59% 41% 53% 47% / 45% 59% 41% 55%">b</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ef5350;--tilt:-5deg;--blob:47% 53% 41% 59% / 60% 41% 59% 40%">o</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#7986cb;--tilt:4deg;--blob:54% 46% 57% 43% / 43% 56% 44% 57%">x</span>
+        </h1>
+        <button id="sound-toggle" type="button" aria-pressed="true">🔊 Sound</button>
+      </header>
+      <div class="tin-layout">
+        <section class="canvas-lid" aria-label="Watercolor paper lid">
+          <canvas id="paint-canvas" aria-label="Watercolor painting canvas"></canvas>
+          <div id="canvas-wash" class="canvas-wash" aria-hidden="true"></div>
+        </section>
+        <section class="tin-base" aria-label="Watercolor tin base">
+          <section class="control-strip" aria-label="Canvas controls">
+            <div class="control-group action-row">
+              <button id="clear-canvas" type="button">Clear Canvas</button>
+              <button id="undo-canvas" type="button" disabled>Undo</button>
+              <button id="save-canvas" type="button">Save</button>
+            </div>
+            <section class="control-group brush-panel" aria-label="Brush hardness">
+          <span class="brush-label">Hardness</span>
+          <div id="hardness-controls" role="group" aria-label="Brush hardness">
+            <button class="brush-control" type="button" data-hardness="1" aria-pressed="false">1</button>
+            <button class="brush-control" type="button" data-hardness="2" aria-pressed="false">2</button>
+            <button class="brush-control" type="button" data-hardness="3" aria-pressed="false">3</button>
+            <button class="brush-control" type="button" data-hardness="4" aria-pressed="false">4</button>
+            <button class="brush-control" type="button" data-hardness="5" aria-pressed="false">5</button>
+            <button class="brush-control" type="button" data-hardness="6" aria-pressed="false">6</button>
+          </div>
+            </section>
+            <section class="control-group brush-panel" aria-label="Brush size">
+          <span class="brush-label">Size</span>
+          <div id="size-controls" role="group" aria-label="Brush size">
+            <button class="brush-control" type="button" data-size="s" aria-pressed="false">S</button>
+            <button class="brush-control" type="button" data-size="m" aria-pressed="false">M</button>
+            <button class="brush-control" type="button" data-size="l" aria-pressed="false">L</button>
+          </div>
+            </section>
+            <section class="control-group brush-panel pressure-panel" aria-label="Brush pressure">
+          <span class="brush-label">Pressure</span>
+          <div class="pressure-meter" role="img" aria-label="Current brush pressure">
+            <i id="pressure-fill" class="pressure-fill"></i>
+          </div>
+          <span id="pressure-value" class="pressure-value">50%</span>
+          <span class="pressure-keys">press [ softer · ] harder</span>
+            </section>
+            <section class="control-group brush-panel pressure-panel water-panel" aria-label="Brush water">
+          <span class="brush-label">Water</span>
+          <div class="pressure-meter water-meter" role="img" aria-label="Current brush water">
+            <i id="water-fill" class="pressure-fill water-fill"></i>
+          </div>
+          <span id="water-value" class="pressure-value">50%</span>
+          <span class="pressure-keys">press ; drier · ' wetter</span>
+            </section>
+            <section class="control-group brush-panel pressure-panel paint-panel" aria-label="Paint pickup">
+          <span class="brush-label">Paint</span>
+          <div id="paint-meter" class="pressure-meter paint-meter" role="slider" aria-label="Paint pickup" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50">
+            <i id="paint-fill" class="pressure-fill paint-fill"></i>
+          </div>
+          <span id="paint-value" class="pressure-value">50%</span>
+          <span class="pressure-keys">press , less · . more</span>
+            </section>
+            <section class="control-group palette-panel" aria-label="Base paint palette">
+          <span class="palette-label">Palette</span>
+          <div id="palette-swatches" role="group" aria-label="Base paint colors"></div>
+            </section>
+            <section class="control-group tray-panel" aria-label="Mixed paint tray">
+          <span class="tray-label">Mixing tray</span>
+          <div id="tray-swatches" role="group" aria-label="Mixed paint colors"></div>
+          <button id="clear-tray" type="button">Clear Tray</button>
+            </section>
+            <section class="control-group save-panel" aria-label="Saved paintings">
+              <div id="save-slots" class="slot-row" role="list" aria-label="Saved painting slots"></div>
+            </section>
+          </section>
+        </section>
+      </div>
+    </main>
+    <div id="brush-cursor" class="brush-cursor" aria-hidden="true"></div>
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>
