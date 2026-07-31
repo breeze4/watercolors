@@ -383,6 +383,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     addButton.addEventListener('click', () => {
       pickerPanel.hidden = !pickerPanel.hidden;
       syncPickerToggle();
+      if (!pickerPanel.hidden) pickerPanel.scrollIntoView({ block: 'nearest' });
     });
     paletteContainer.append(addButton);
     syncPickerToggle();

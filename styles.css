@@ -11,6 +11,7 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
 .studio-shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; padding: clamp(8px, 1.6vw, 20px); gap: 10px; overflow: hidden; }
 .studio-masthead { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; min-height: 53px; gap: 8px 14px; }
 .masthead-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.label-tight { display: none; }
 #sound-toggle { background: #fff8e5; box-shadow: inset 0 -3px 0 rgba(133, 80, 37, .14), 0 2px 0 rgba(133, 80, 37, .14); }
 .wordmark { display: flex; align-items: center; justify-content: center; margin: 0; transform: rotate(-1deg); filter: drop-shadow(0 3px 0 rgba(113, 68, 36, .16)); }
 .wordmark-letter { display: inline-grid; width: clamp(29px, 3.3vw, 44px); height: clamp(33px, 3.7vw, 49px); margin-left: -3px; place-items: center; color: #fffdf6; font-size: clamp(1.45rem, 2.5vw, 2.18rem); font-weight: 950; line-height: 1; text-shadow: 0 2px 0 rgba(65, 37, 58, .18); transform: rotate(var(--tilt)); background: var(--paint); border-radius: var(--blob); }
@@ -65,7 +66,7 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
 .picker-preview { display: inline-block; width: 44px; height: 44px; border: 3px solid rgba(102, 68, 54, .45); border-radius: 43% 57% 48% 52% / 58% 41% 59% 42%; background: transparent; box-shadow: inset 1px 2px 3px rgba(255,255,255,.43), 0 2px 0 rgba(96, 55, 29, .18); }
 #picker-add { color: #fffdf6; background: #4d9f8e; box-shadow: inset 0 -4px 0 rgba(75, 44, 52, .18), 0 2px 0 rgba(126, 75, 43, .17); }
 #picker-add:disabled { opacity: .5; cursor: default; }
-#picker-close { min-width: 44px; padding: 0 10px; background: #fff8e5; box-shadow: inset 0 -3px 0 rgba(133, 80, 37, .14), 0 2px 0 rgba(133, 80, 37, .14); }
+#picker-close { min-width: 44px; margin-left: auto; padding: 0 10px; background: #fff8e5; box-shadow: inset 0 -3px 0 rgba(133, 80, 37, .14), 0 2px 0 rgba(133, 80, 37, .14); }
 .blob-shape-0 { border-radius: 40% 60% 55% 45% / 55% 45% 60% 40%; }
 .blob-shape-1 { border-radius: 54% 46% 42% 58% / 46% 58% 42% 54%; }
 .blob-shape-2 { border-radius: 46% 54% 60% 40% / 62% 42% 58% 38%; }
@@ -79,29 +80,30 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
 @keyframes tray-splat { 0% { opacity: 0; transform: scale(.35) rotate(-18deg); } 58% { opacity: 1; transform: scale(1.23) rotate(10deg); } 100% { transform: scale(1) rotate(0); } }
 @keyframes paper-wash { 0% { opacity: 0; transform: translateX(-130%) rotate(-4deg); } 15% { opacity: 1; } 80% { opacity: .85; } 100% { opacity: 0; transform: translateX(130%) rotate(-4deg); } }
 @keyframes paint-speck-fade { 0% { opacity: .9; transform: translate(0, 0) scale(.75); } 75% { opacity: .62; } 100% { opacity: 0; transform: translate(var(--speck-x), var(--speck-y)) scale(.15); } }
+/* Phone budget is structural, not arithmetic: masthead auto, tin base capped
+   (scrolls internally), canvas takes exactly the remainder — the column can
+   never outgrow the fixed 100dvh shell, so nothing clips offscreen. */
 @media (max-width: 720px) {
   .studio-shell { padding: 7px; gap: 6px; }
-  .studio-masthead { min-height: 43px; }
-  .studio-masthead { gap: 7px; }
-  .wordmark-letter { width: 28px; height: 33px; font-size: 1.42rem; }
+  .studio-masthead { justify-content: center; min-height: 0; gap: 4px 7px; }
+  .masthead-actions { justify-content: center; gap: 4px; }
+  .masthead-actions button { min-height: 36px; padding: 0 7px; font-size: .78rem; }
+  .label-full { display: none; }
+  .label-tight { display: inline; }
+  .wordmark-letter { width: 24px; height: 28px; font-size: 1.25rem; }
   .tin-layout { flex-direction: column; gap: 8px; }
-  .canvas-lid { flex: 1 1 53vh; min-height: 53vh; --lid-pad: 8px; padding: var(--lid-pad); border-width: 4px; border-radius: 25px 30px 23px 32px / 28px 25px 32px 23px; }
+  .canvas-lid { flex: 1 1 auto; min-height: 0; --lid-pad: 8px; padding: var(--lid-pad); border-width: 4px; border-radius: 25px 30px 23px 32px / 28px 25px 32px 23px; }
   .canvas-lid::before { inset: 8px; }
   .canvas-wash { inset: 8px; }
-  .tin-base { flex: 0 0 auto; min-width: 0; max-height: 39vh; padding: 9px; border-width: 4px; }
+  .tin-base { flex: 0 1 auto; min-width: 0; max-height: 39vh; max-height: 38dvh; padding: 9px; border-width: 4px; }
   .control-strip { gap: 7px; }
   .control-group { padding: 7px; }
   .swatch { width: 44px; min-width: 44px; height: 44px; min-height: 44px; }
   .slot-row { flex-basis: 150px; }
+  .pressure-keys { display: none; }
 }
 @media (hover: none), (pointer: coarse) { .brush-cursor { display: none !important; } #paint-canvas { cursor: crosshair; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } .canvas-wash.is-washing, .is-splatting, .paint-speck { animation: none !important; } .brush-cursor { transition: none; } .pressure-fill { transition: none; } }
-@media (max-width: 720px) {
-  .studio-masthead { flex-wrap: wrap; min-height: 0; row-gap: 4px; }
-  .masthead-actions { gap: 5px; }
-  .masthead-actions button { min-height: 38px; padding: 0 9px; font-size: .82rem; }
-  .pressure-keys { display: none; }
-}
 /* Deploy stamp, rewritten by the pre-commit hook: an at-a-glance answer to
    "is this device running the latest deploy?" on cache-happy home-screen apps. */
 .version-tag { position: fixed; right: 7px; bottom: 4px; z-index: 25; color: rgba(92, 63, 36, .5); font-size: .6rem; letter-spacing: .02em; pointer-events: none; user-select: none; }

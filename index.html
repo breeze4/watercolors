@@ -16,10 +16,10 @@
           <span class="wordmark-letter" aria-hidden="true" style="--paint:#ef5350;--tilt:-6deg;--blob:43% 57% 48% 52% / 58% 41% 59% 42%">S</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#f48fb1;--tilt:3deg;--blob:58% 42% 54% 46% / 42% 58% 43% 57%">p</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ba68c8;--tilt:-2deg;--blob:45% 55% 59% 41% / 60% 43% 57% 40%">l</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#338bd5;--tilt:4deg;--blob:58% 42% 47% 53% / 45% 58% 42% 55%">o</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#4db6ac;--tilt:-3deg;--blob:42% 58% 52% 48% / 55% 41% 59% 45%">t</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#81c784;--tilt:5deg;--blob:56% 44% 43% 57% / 41% 57% 43% 59%">c</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ffd54f;--tilt:-4deg;--blob:44% 56% 58% 42% / 58% 44% 56% 42%">h</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ffb74d;--tilt:2deg;--blob:59% 41% 53% 47% / 45% 59% 41% 55%">b</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ef5350;--tilt:-5deg;--blob:47% 53% 41% 59% / 60% 41% 59% 40%">o</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#7986cb;--tilt:4deg;--blob:54% 46% 57% 43% / 43% 56% 44% 57%">x</span>
         </h1>
         <div class="masthead-actions">
-          <button id="clear-canvas" type="button">Clear Canvas</button>
+          <button id="clear-canvas" type="button"><span class="label-full">Clear Canvas</span><span class="label-tight">Clear</span></button>
           <button id="undo-canvas" type="button" disabled>Undo</button>
           <button id="save-canvas" type="button">Save</button>
-          <button id="save-device" type="button">Save to Device</button>
+          <button id="save-device" type="button"><span class="label-full">Save to Device</span><span class="label-tight">Export</span></button>
           <button id="sound-toggle" type="button" aria-pressed="true">🔊 Sound</button>
         </div>
       </header>
@@ -84,12 +84,12 @@
           <span class="palette-label">Palette</span>
           <div id="palette-swatches" role="group" aria-label="Base paint colors"></div>
           <div id="color-picker" class="color-picker" hidden>
-            <canvas id="picker-spectrum" width="280" height="120" aria-label="Color spectrum — drag to pick a color"></canvas>
             <div class="picker-actions">
               <span id="picker-preview" class="picker-preview" aria-hidden="true"></span>
               <button id="picker-add" type="button" disabled>Add it!</button>
               <button id="picker-close" type="button" aria-label="Close color picker">×</button>
             </div>
+            <canvas id="picker-spectrum" width="280" height="120" aria-label="Color spectrum — drag to pick a color"></canvas>
           </div>
             </section>
             <section class="control-group tray-panel" aria-label="Mixed paint tray">
@@ -116,7 +116,7 @@
       </div>
     </div>
     <button id="update-toast" class="update-toast" type="button" hidden>🎨 Fresh paint! Tap to save &amp; update</button>
-    <span class="version-tag" aria-hidden="true">v2026-07-31.1625</span>
+    <span class="version-tag" aria-hidden="true">v2026-07-31.1646</span>
     <div id="brush-cursor" class="brush-cursor" aria-hidden="true"></div>
     <script type="module" src="js/main.js"></script>
   </body>
