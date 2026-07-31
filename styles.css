@@ -98,6 +98,10 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
   #sound-toggle { padding: 0 8px; }
   .pressure-keys { display: none; }
 }
+/* Deploy stamp, rewritten by the pre-commit hook: an at-a-glance answer to
+   "is this device running the latest deploy?" on cache-happy home-screen apps. */
+.version-tag { position: fixed; right: 7px; bottom: 4px; z-index: 25; color: rgba(92, 63, 36, .5); font-size: .6rem; letter-spacing: .02em; pointer-events: none; user-select: none; }
+
 /* Keepsake overlay: the painting as a plain <img> so a long-press can reach
    "Add to Photos" on iOS — the share sheet alone doesn't reliably offer it. */
 .keepsake { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(53, 41, 58, .55); }

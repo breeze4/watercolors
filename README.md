@@ -51,6 +51,13 @@ these same files unmodified, so nothing here depends on it.
 push to `main` — no build, no manual step. `.nojekyll` keeps Pages from running
 the files through Jekyll.
 
+The tiny stamp in the app's bottom-right corner (`.version-tag` in `index.html`)
+is rewritten at commit time by a local `pre-commit` git hook (machine-local, in
+`.git/hooks/`), so a device shows at a glance which deploy it is running —
+useful when a home-screen shortcut is serving cached files. If you clone fresh
+and want stamping, recreate the hook: it seds the tag to `v$(date +%Y-%m-%d.%H%M)`
+and `git add`s `index.html`.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
