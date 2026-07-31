@@ -815,6 +815,56 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     });
   }
 
+  // Update nudge: home-screen web apps resume without reloading, so on every
+  // return to the foreground we fetch our own index.html past the cache and
+  // compare its deploy stamp to the running one. Untouched canvas → reload
+  // straight into the new version; painting in progress → offer a toast that
+  // saves to a slot before reloading, so an update can never eat a painting.
+  const updateToast = document.querySelector('#update-toast');
+  const versionTag = document.querySelector('.version-tag');
+  let lastUpdateCheck = 0;
+
+  function checkForUpdate() {
+    if (!updateToast || !versionTag) return;
+    const now = Date.now();
+    if (now - lastUpdateCheck < 60 * 1000) return;
+    lastUpdateCheck = now;
+    fetch('index.html', { cache: 'no-store' })
+      .then((response) => (response.ok ? response.text() : null))
+      .then((html) => {
+        if (!html) return;
+        const fresh = html.match(/version-tag[^>]*>(v[^<]+)</);
+        const running = versionTag.textContent.trim();
+        if (!fresh || fresh[1] === running) return;
+        if (undoStack.length === 0) {
+          window.location.reload();
+          return;
+        }
+        updateToast.hidden = false;
+      })
+      .catch(() => {
+        // Offline or flaky network: stay quiet, try again next foreground.
+      });
+  }
+
+  if (updateToast) {
+    updateToast.addEventListener('click', () => {
+      updateToast.disabled = true;
+      slotStore.save().then((saved) => {
+        if (saved) {
+          window.location.reload();
+          return;
+        }
+        // Save failed (its own alert already showed); keep the painting.
+        updateToast.disabled = false;
+      });
+    });
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) checkForUpdate();
+  });
+  window.setTimeout(checkForUpdate, 8000);
+
   // Entering or leaving the side-by-side workspace changes the canvas's CSS box
   // without a window resize. The backing store must follow immediately (or
   // clicks land at the stale scale, offset from the cursor) and once more after
