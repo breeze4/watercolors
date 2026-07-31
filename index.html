@@ -15,7 +15,13 @@
         <h1 class="wordmark" aria-label="Splotchbox">
           <span class="wordmark-letter" aria-hidden="true" style="--paint:#ef5350;--tilt:-6deg;--blob:43% 57% 48% 52% / 58% 41% 59% 42%">S</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#f48fb1;--tilt:3deg;--blob:58% 42% 54% 46% / 42% 58% 43% 57%">p</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ba68c8;--tilt:-2deg;--blob:45% 55% 59% 41% / 60% 43% 57% 40%">l</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#338bd5;--tilt:4deg;--blob:58% 42% 47% 53% / 45% 58% 42% 55%">o</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#4db6ac;--tilt:-3deg;--blob:42% 58% 52% 48% / 55% 41% 59% 45%">t</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#81c784;--tilt:5deg;--blob:56% 44% 43% 57% / 41% 57% 43% 59%">c</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ffd54f;--tilt:-4deg;--blob:44% 56% 58% 42% / 58% 44% 56% 42%">h</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ffb74d;--tilt:2deg;--blob:59% 41% 53% 47% / 45% 59% 41% 55%">b</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#ef5350;--tilt:-5deg;--blob:47% 53% 41% 59% / 60% 41% 59% 40%">o</span><span class="wordmark-letter" aria-hidden="true" style="--paint:#7986cb;--tilt:4deg;--blob:54% 46% 57% 43% / 43% 56% 44% 57%">x</span>
         </h1>
-        <button id="sound-toggle" type="button" aria-pressed="true">🔊 Sound</button>
+        <div class="masthead-actions">
+          <button id="clear-canvas" type="button">Clear Canvas</button>
+          <button id="undo-canvas" type="button" disabled>Undo</button>
+          <button id="save-canvas" type="button">Save</button>
+          <button id="save-device" type="button">Save to Device</button>
+          <button id="sound-toggle" type="button" aria-pressed="true">🔊 Sound</button>
+        </div>
       </header>
       <div class="tin-layout">
         <section class="canvas-lid" aria-label="Watercolor paper lid">
@@ -24,12 +30,6 @@
         </section>
         <section class="tin-base" aria-label="Watercolor tin base">
           <section class="control-strip" aria-label="Canvas controls">
-            <div class="control-group action-row">
-              <button id="clear-canvas" type="button">Clear Canvas</button>
-              <button id="undo-canvas" type="button" disabled>Undo</button>
-              <button id="save-canvas" type="button">Save</button>
-              <button id="save-device" type="button">Save to Device</button>
-            </div>
             <section class="control-group chip-row" aria-label="Quick brush controls">
               <button id="chip-hardness" class="brush-chip" type="button"></button>
               <button id="chip-size" class="brush-chip" type="button"></button>
@@ -115,7 +115,7 @@
         </div>
       </div>
     </div>
-    <span class="version-tag" aria-hidden="true">v2026-07-31.1443</span>
+    <span class="version-tag" aria-hidden="true">v2026-07-31.1612</span>
     <div id="brush-cursor" class="brush-cursor" aria-hidden="true"></div>
     <script type="module" src="js/main.js"></script>
   </body>

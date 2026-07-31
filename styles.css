@@ -5,8 +5,12 @@ html, body { min-height: 100%; margin: 0; }
 body { min-width: 0; overflow-x: hidden; color: var(--ink); background: radial-gradient(circle at 10% 5%, #fff6d6 0 12%, transparent 32%), linear-gradient(150deg, #ffdca1, #f6b879); font-family: ui-rounded, "Arial Rounded MT Bold", "Trebuchet MS", system-ui, sans-serif; }
 button { min-height: 44px; border: 0; padding: 0 14px; color: inherit; font: inherit; font-weight: 800; letter-spacing: .01em; cursor: pointer; touch-action: manipulation; }
 button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
-.studio-shell { display: flex; flex-direction: column; min-height: 100dvh; padding: clamp(8px, 1.6vw, 20px); gap: 10px; }
-.studio-masthead { display: flex; align-items: center; justify-content: center; min-height: 53px; gap: 14px; }
+/* Fixed viewport-height frame: the page itself never scrolls. When controls
+   outgrow the tin base (a custom palette past a dozen extras), the base
+   scrolls internally instead. */
+.studio-shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; padding: clamp(8px, 1.6vw, 20px); gap: 10px; overflow: hidden; }
+.studio-masthead { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; min-height: 53px; gap: 8px 14px; }
+.masthead-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
 #sound-toggle { background: #fff8e5; box-shadow: inset 0 -3px 0 rgba(133, 80, 37, .14), 0 2px 0 rgba(133, 80, 37, .14); }
 .wordmark { display: flex; align-items: center; justify-content: center; margin: 0; transform: rotate(-1deg); filter: drop-shadow(0 3px 0 rgba(113, 68, 36, .16)); }
 .wordmark-letter { display: inline-grid; width: clamp(29px, 3.3vw, 44px); height: clamp(33px, 3.7vw, 49px); margin-left: -3px; place-items: center; color: #fffdf6; font-size: clamp(1.45rem, 2.5vw, 2.18rem); font-weight: 950; line-height: 1; text-shadow: 0 2px 0 rgba(65, 37, 58, .18); transform: rotate(var(--tilt)); background: var(--paint); border-radius: var(--blob); }
@@ -22,14 +26,13 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
 .canvas-wash { position: absolute; z-index: 2; inset: 12px; pointer-events: none; opacity: 0; border-radius: inherit; background: linear-gradient(105deg, transparent 15%, rgba(106, 187, 218, .08) 32%, rgba(255, 207, 96, .28) 49%, rgba(239, 119, 141, .12) 65%, transparent 82%); transform: translateX(-130%) rotate(-4deg); }
 .canvas-wash.is-washing { animation: paper-wash 560ms cubic-bezier(.25,.9,.32,1) both; }
 .tin-base { display: flex; flex: .88 1 0; min-width: 300px; min-height: 0; padding: clamp(12px, 1.8vw, 22px); overflow: auto; border: 5px solid #d99847; border-radius: 38px 30px 41px 32px / 31px 42px 30px 39px; background: linear-gradient(145deg, #ffd983, #f5b85e 57%, #dc9348); box-shadow: inset 0 2px 0 rgba(255,255,255,.55), inset 0 -5px 0 rgba(123, 68, 24, .14), 0 10px 18px var(--shadow); }
-.control-strip { display: grid; width: 100%; align-content: start; gap: 12px; }
-.control-group { min-width: 0; padding: 10px; border-radius: 22px 18px 25px 20px / 19px 25px 18px 22px; background: rgba(255, 250, 228, .56); box-shadow: inset 0 2px 3px rgba(134, 73, 26, .13), 0 2px 0 rgba(255,255,255,.25); }
-.action-row, .brush-panel, .palette-panel, .tray-panel, .save-panel { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.action-row { justify-content: space-between; flex-wrap: wrap; }
+.control-strip { display: grid; width: 100%; align-content: start; gap: 8px; }
+.control-group { min-width: 0; padding: 8px; border-radius: 22px 18px 25px 20px / 19px 25px 18px 22px; background: rgba(255, 250, 228, .56); box-shadow: inset 0 2px 3px rgba(134, 73, 26, .13), 0 2px 0 rgba(255,255,255,.25); }
+.brush-panel, .palette-panel, .tray-panel, .save-panel { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .brush-panel, .palette-panel, .tray-panel { flex-wrap: wrap; }
 .palette-label, .tray-label, .brush-label { color: #79522b; font-size: .76rem; font-weight: 900; letter-spacing: .08em; text-transform: uppercase; }
-#hardness-controls, #size-controls, #palette-swatches, #tray-swatches { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
-.swatch { width: 48px; min-width: 48px; height: 48px; min-height: 48px; padding: 0; border: 3px solid rgba(102, 68, 54, .45); box-shadow: inset 1px 2px 3px rgba(255,255,255,.43), 0 2px 0 rgba(96, 55, 29, .18); }
+#hardness-controls, #size-controls, #palette-swatches, #tray-swatches { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.swatch { width: 45px; min-width: 45px; height: 45px; min-height: 45px; padding: 0; border: 3px solid rgba(102, 68, 54, .45); box-shadow: inset 1px 2px 3px rgba(255,255,255,.43), 0 2px 0 rgba(96, 55, 29, .18); }
 .swatch[aria-pressed="true"], .brush-control.is-active { outline: 3px solid #4a3972; outline-offset: 2px; }
 .brush-control { min-width: 44px; padding: 0 12px; background: #fff8e5; box-shadow: inset 0 -3px 0 rgba(133, 80, 37, .14), 0 2px 0 rgba(133, 80, 37, .14); }
 .pressure-meter { position: relative; flex: 1 1 90px; min-width: 90px; height: 22px; overflow: hidden; border: 2px solid rgba(102, 68, 54, .4); border-radius: 12px 9px 13px 10px / 9px 13px 8px 12px; background: #fff8e5; box-shadow: inset 0 2px 3px rgba(134, 73, 26, .13); cursor: pointer; touch-action: none; }
@@ -55,7 +58,7 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
 .swatch-badge { position: absolute; z-index: 1; top: -8px; right: -8px; min-width: 24px; min-height: 24px; width: 24px; height: 24px; padding: 0; color: #fff; font-size: .8rem; line-height: 1; box-shadow: 0 2px 0 rgba(93, 45, 45, .23); }
 .swatch-remove { background: #d75e65; }
 .swatch-keep { background: #4d9f8e; }
-.add-color { display: grid; place-items: center; width: 48px; min-width: 48px; height: 48px; min-height: 48px; padding: 0; color: #79522b; font-size: 1.6rem; font-weight: 900; background: #fff8e5; border: 3px dashed rgba(102, 68, 54, .45); }
+.add-color { display: grid; place-items: center; width: 45px; min-width: 45px; height: 45px; min-height: 45px; padding: 0; color: #79522b; font-size: 1.6rem; font-weight: 900; background: #fff8e5; border: 3px dashed rgba(102, 68, 54, .45); }
 .color-picker { flex-basis: 100%; display: grid; gap: 8px; padding: 8px; border-radius: 18px 22px 16px 20px / 20px 16px 22px 18px; background: rgba(255, 250, 228, .8); }
 #picker-spectrum { display: block; width: 100%; height: 120px; border: 3px solid rgba(102, 68, 54, .45); border-radius: 14px 18px 12px 16px / 16px 12px 18px 14px; touch-action: none; cursor: crosshair; }
 .picker-actions { display: flex; align-items: center; gap: 10px; }
@@ -95,7 +98,8 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; } .canvas-wash.is-washing, .is-splatting, .paint-speck { animation: none !important; } .brush-cursor { transition: none; } .pressure-fill { transition: none; } }
 @media (max-width: 720px) {
   .studio-masthead { flex-wrap: wrap; min-height: 0; row-gap: 4px; }
-  #sound-toggle { padding: 0 8px; }
+  .masthead-actions { gap: 5px; }
+  .masthead-actions button { min-height: 38px; padding: 0 9px; font-size: .82rem; }
   .pressure-keys { display: none; }
 }
 /* Deploy stamp, rewritten by the pre-commit hook: an at-a-glance answer to
@@ -128,6 +132,5 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
   .palette-panel { order: 1; }
   .tray-panel { order: 2; }
   .chip-row { order: 3; }
-  .action-row { order: 4; }
   .save-panel { order: 5; }
 }
