@@ -52,6 +52,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   const clearButton = document.querySelector('#clear-canvas');
   const undoButton = document.querySelector('#undo-canvas');
   const saveButton = document.querySelector('#save-canvas');
+  const saveDeviceButton = document.querySelector('#save-device');
   const paletteContainer = document.querySelector('#palette-swatches');
   const trayContainer = document.querySelector('#tray-swatches');
   const clearTrayButton = document.querySelector('#clear-tray');
@@ -494,6 +495,43 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     onRender: applyBlobShapes,
   });
 
+  function exportFilename(now) {
+    const pad = (value) => String(value).padStart(2, '0');
+    return `splotchbox-${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`
+      + `-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.png`;
+  }
+
+  function downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+    // Revoke after the download has had a moment to grab the URL.
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    return { mode: 'downloaded', name, size: blob.size, type: blob.type };
+  }
+
+  // The keepsake copy: full backing-store PNG, out through the share sheet
+  // where files can be shared (iOS "Save Image" → Photos), a plain download
+  // everywhere else. Resolves to what happened so agent checks can assert it.
+  function saveToDevice() {
+    return new Promise((resolve) => { canvas.toBlob(resolve, 'image/png'); }).then((blob) => {
+      if (!blob) return { mode: 'failed', name: '', size: 0, type: '' };
+      const name = exportFilename(new Date());
+      const file = new File([blob], name, { type: 'image/png' });
+      if (navigator.canShare && navigator.canShare({ files: [file] }) && navigator.share) {
+        return navigator.share({ files: [file] }).then(
+          () => ({ mode: 'shared', name, size: blob.size, type: blob.type }),
+          (error) => (error && error.name === 'AbortError'
+            ? { mode: 'canceled', name, size: blob.size, type: blob.type }
+            : downloadBlob(blob, name)),
+        );
+      }
+      return downloadBlob(blob, name);
+    });
+  }
+
   // Entering or leaving the side-by-side workspace changes the canvas's CSS box
   // without a window resize. The backing store must follow immediately (or
   // clicks land at the stale scale, offset from the cursor) and once more after
@@ -531,6 +569,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   clearButton.addEventListener('click', clearCanvasWithUndo);
   if (undoButton) undoButton.addEventListener('click', undoCanvas);
   saveButton.addEventListener('click', () => slotStore.save());
+  if (saveDeviceButton) saveDeviceButton.addEventListener('click', () => { void saveToDevice(); });
   clearTrayButton.addEventListener('click', clearTray);
   hardnessControls.addEventListener('click', (event) => {
     const button = event.target.closest('[data-hardness]');
@@ -572,6 +611,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     clearCanvas: clearCanvasWithUndo,
     undo: undoCanvas,
     save: () => slotStore.save(),
+    saveToDevice,
     loadSlot: (index) => slotStore.load(index),
     deleteSlot: (index) => slotStore.remove(index),
     getSlots: () => slotStore.getAll(),
