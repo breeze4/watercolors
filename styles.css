@@ -98,3 +98,19 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
   #sound-toggle { padding: 0 8px; }
   .pressure-keys { display: none; }
 }
+/* Mobile compact controls: trays first, full brush rows collapse to cycle
+   chips. One state, two skins — the chips call the same setters. */
+.chip-row { display: none; }
+.brush-chip { min-width: 0; padding: 0 10px; color: #4a3547; font-size: .82rem; font-weight: 800; background: #fff8e5; box-shadow: inset 0 -3px 0 rgba(133, 80, 37, .14), 0 2px 0 rgba(133, 80, 37, .14); }
+.chip-meter { background: linear-gradient(to right, #bcd9f2 0 var(--chip-fill, 50%), #fff8e5 var(--chip-fill, 50%)); }
+.chip-water { background: linear-gradient(to right, #c3e3f5 0 var(--chip-fill, 50%), #fff8e5 var(--chip-fill, 50%)); }
+.chip-paint { background: linear-gradient(to right, #d4c3ef 0 var(--chip-fill, 50%), #fff8e5 var(--chip-fill, 50%)); }
+@media (max-width: 720px) {
+  .brush-panel { display: none; }
+  .chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .palette-panel { order: 1; }
+  .tray-panel { order: 2; }
+  .chip-row { order: 3; }
+  .action-row { order: 4; }
+  .save-panel { order: 5; }
+}

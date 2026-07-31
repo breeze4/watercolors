@@ -45,6 +45,19 @@ const basePalette = [
 
 const CUSTOM_COLORS_KEY = 'splotchbox.custom-colors.v1';
 
+// Cycle-chip stops (mobile): 20% steps. Pressure skips 0 — a zero-pressure
+// stroke paints nearly nothing and reads as broken; the API and keyboard can
+// still reach lower values.
+const PRESSURE_CHIP_STOPS = [0.2, 0.4, 0.6, 0.8, 1];
+const PERCENT_CHIP_STOPS = [0, 0.2, 0.4, 0.6, 0.8, 1];
+
+function nextChipStop(current, stops) {
+  for (const stop of stops) {
+    if (stop > current + 0.001) return stop;
+  }
+  return stops[0];
+}
+
 export function createStudio({ onLayoutSettled = () => {} } = {}) {
   // The paint-along layer loads after the studio is already running, so the
   // settle hook is replaceable rather than fixed at construction.
@@ -65,6 +78,11 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   const clearTrayButton = document.querySelector('#clear-tray');
   const hardnessControls = document.querySelector('#hardness-controls');
   const sizeControls = document.querySelector('#size-controls');
+  const chipHardness = document.querySelector('#chip-hardness');
+  const chipSize = document.querySelector('#chip-size');
+  const chipPressure = document.querySelector('#chip-pressure');
+  const chipWater = document.querySelector('#chip-water');
+  const chipPaint = document.querySelector('#chip-paint');
   const canvasLid = canvas.closest('.canvas-lid');
   const washOverlay = document.querySelector('#canvas-wash');
   const brushCursor = document.querySelector('#brush-cursor');
@@ -118,9 +136,28 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
 
   // The meter is a control, not a telemetry readout: it holds the set value
   // steady while painting (velocity still modulates the actual stroke).
+  // The chips are the mobile skin of the same state: labels and fill tints
+  // rerender from every setter, so the two renderings can never disagree.
+  function renderChips() {
+    if (!chipHardness) return;
+    chipHardness.textContent = `Hard ${state.hardness}`;
+    chipHardness.setAttribute('aria-label', `Brush hardness ${state.hardness} of 6 — tap to change`);
+    chipSize.textContent = `Size ${String(state.size).toUpperCase()}`;
+    chipSize.setAttribute('aria-label', `Brush size ${String(state.size).toUpperCase()} — tap to change`);
+    [[chipPressure, 'Press', 'Pressure', state.pressure],
+      [chipWater, 'Water', 'Water', state.water],
+      [chipPaint, 'Paint', 'Paint', state.paint]].forEach(([chip, label, fullLabel, value]) => {
+      const percent = Math.round(value * 100);
+      chip.textContent = `${label} ${percent}%`;
+      chip.style.setProperty('--chip-fill', `${percent}%`);
+      chip.setAttribute('aria-label', `${fullLabel} ${percent}% — tap to change`);
+    });
+  }
+
   function renderPressure() {
     if (pressureFill) pressureFill.style.width = `${Math.round(state.pressure * 100)}%`;
     if (pressureValue) pressureValue.textContent = `${Math.round(state.pressure * 100)}%`;
+    renderChips();
   }
 
   function setPressure(pressure) {
@@ -139,6 +176,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   function renderWater() {
     if (waterFill) waterFill.style.width = `${Math.round(state.water * 100)}%`;
     if (waterValue) waterValue.textContent = `${Math.round(state.water * 100)}%`;
+    renderChips();
   }
 
   function setWater(water) {
@@ -152,6 +190,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   function renderPaint() {
     if (paintFill) paintFill.style.width = `${Math.round(state.paint * 100)}%`;
     if (paintValue) paintValue.textContent = `${Math.round(state.paint * 100)}%`;
+    renderChips();
   }
 
   function setPaint(paint) {
@@ -447,6 +486,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
       button.classList.toggle('is-active', active);
       button.setAttribute('aria-pressed', String(active));
     });
+    renderChips();
   }
 
   function clearCanvas() {
@@ -724,6 +764,16 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     const button = event.target.closest('[data-size]');
     if (button) setSize(button.dataset.size);
   });
+  if (chipHardness) {
+    chipHardness.addEventListener('click', () => setHardness(state.hardness % 6 + 1));
+    chipSize.addEventListener('click', () => {
+      const order = ['s', 'm', 'l'];
+      setSize(order[(order.indexOf(state.size) + 1) % order.length]);
+    });
+    chipPressure.addEventListener('click', () => setPressure(nextChipStop(state.pressure, PRESSURE_CHIP_STOPS)));
+    chipWater.addEventListener('click', () => setWater(nextChipStop(state.water, PERCENT_CHIP_STOPS)));
+    chipPaint.addEventListener('click', () => setPaint(nextChipStop(state.paint, PERCENT_CHIP_STOPS)));
+  }
   window.addEventListener('keydown', (event) => {
     const target = event.target;
     if (target instanceof Element && (target.matches('input, textarea, select') || target.isContentEditable)) return;
