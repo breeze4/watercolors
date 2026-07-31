@@ -74,6 +74,14 @@
             <section class="control-group palette-panel" aria-label="Base paint palette">
           <span class="palette-label">Palette</span>
           <div id="palette-swatches" role="group" aria-label="Base paint colors"></div>
+          <div id="color-picker" class="color-picker" hidden>
+            <canvas id="picker-spectrum" width="280" height="120" aria-label="Color spectrum — drag to pick a color"></canvas>
+            <div class="picker-actions">
+              <span id="picker-preview" class="picker-preview" aria-hidden="true"></span>
+              <button id="picker-add" type="button" disabled>Add it!</button>
+              <button id="picker-close" type="button" aria-label="Close color picker">×</button>
+            </div>
+          </div>
             </section>
             <section class="control-group tray-panel" aria-label="Mixed paint tray">
           <span class="tray-label">Mixing tray</span>

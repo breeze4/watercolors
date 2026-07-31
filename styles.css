@@ -51,6 +51,18 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
 .save-slot img { display: block; width: 72px; height: 52px; object-fit: cover; border: 3px solid rgba(102, 68, 54, .4); background: #fffdf7; box-shadow: 0 2px 0 rgba(96, 55, 29, .18); }
 .slot-load { min-width: 72px; min-height: 52px; padding: 0; border: 0; background: transparent; }
 .slot-delete { position: absolute; z-index: 1; top: -4px; right: -4px; min-width: 44px; min-height: 44px; padding: 0; color: #fff; background: #d75e65; box-shadow: 0 2px 0 rgba(93, 45, 45, .23); }
+.swatch-wrap { position: relative; display: inline-flex; }
+.swatch-badge { position: absolute; z-index: 1; top: -8px; right: -8px; min-width: 24px; min-height: 24px; width: 24px; height: 24px; padding: 0; color: #fff; font-size: .8rem; line-height: 1; box-shadow: 0 2px 0 rgba(93, 45, 45, .23); }
+.swatch-remove { background: #d75e65; }
+.swatch-keep { background: #4d9f8e; }
+.add-color { display: grid; place-items: center; width: 48px; min-width: 48px; height: 48px; min-height: 48px; padding: 0; color: #79522b; font-size: 1.6rem; font-weight: 900; background: #fff8e5; border: 3px dashed rgba(102, 68, 54, .45); }
+.color-picker { flex-basis: 100%; display: grid; gap: 8px; padding: 8px; border-radius: 18px 22px 16px 20px / 20px 16px 22px 18px; background: rgba(255, 250, 228, .8); }
+#picker-spectrum { display: block; width: 100%; height: 120px; border: 3px solid rgba(102, 68, 54, .45); border-radius: 14px 18px 12px 16px / 16px 12px 18px 14px; touch-action: none; cursor: crosshair; }
+.picker-actions { display: flex; align-items: center; gap: 10px; }
+.picker-preview { display: inline-block; width: 44px; height: 44px; border: 3px solid rgba(102, 68, 54, .45); border-radius: 43% 57% 48% 52% / 58% 41% 59% 42%; background: transparent; box-shadow: inset 1px 2px 3px rgba(255,255,255,.43), 0 2px 0 rgba(96, 55, 29, .18); }
+#picker-add { color: #fffdf6; background: #4d9f8e; box-shadow: inset 0 -4px 0 rgba(75, 44, 52, .18), 0 2px 0 rgba(126, 75, 43, .17); }
+#picker-add:disabled { opacity: .5; cursor: default; }
+#picker-close { min-width: 44px; padding: 0 10px; background: #fff8e5; box-shadow: inset 0 -3px 0 rgba(133, 80, 37, .14), 0 2px 0 rgba(133, 80, 37, .14); }
 .blob-shape-0 { border-radius: 40% 60% 55% 45% / 55% 45% 60% 40%; }
 .blob-shape-1 { border-radius: 54% 46% 42% 58% / 46% 58% 42% 54%; }
 .blob-shape-2 { border-radius: 46% 54% 60% 40% / 62% 42% 58% 38%; }

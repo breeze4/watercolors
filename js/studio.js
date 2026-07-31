@@ -43,6 +43,8 @@ const basePalette = [
   '#ffd54f', '#ffb74d', '#a1887f', '#455a64',
 ];
 
+const CUSTOM_COLORS_KEY = 'splotchbox.custom-colors.v1';
+
 export function createStudio({ onLayoutSettled = () => {} } = {}) {
   // The paint-along layer loads after the studio is already running, so the
   // settle hook is replaceable rather than fixed at construction.
@@ -55,6 +57,11 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   const saveDeviceButton = document.querySelector('#save-device');
   const paletteContainer = document.querySelector('#palette-swatches');
   const trayContainer = document.querySelector('#tray-swatches');
+  const pickerPanel = document.querySelector('#color-picker');
+  const pickerSpectrum = document.querySelector('#picker-spectrum');
+  const pickerPreview = document.querySelector('#picker-preview');
+  const pickerAddButton = document.querySelector('#picker-add');
+  const pickerCloseButton = document.querySelector('#picker-close');
   const clearTrayButton = document.querySelector('#clear-tray');
   const hardnessControls = document.querySelector('#hardness-controls');
   const sizeControls = document.querySelector('#size-controls');
@@ -62,6 +69,8 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   const washOverlay = document.querySelector('#canvas-wash');
   const brushCursor = document.querySelector('#brush-cursor');
   const context = canvas.getContext('2d', { willReadFrequently: true });
+
+  let customPalette = readCustomPalette();
 
   const state = {
     color: '#4a90c2',
@@ -222,7 +231,40 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     }
     if (swatch && typeof swatch === 'object') return resolveSwatch(swatch.color);
     const color = normalizeColor(swatch);
-    return color && (basePalette.includes(color) || state.tray.includes(color)) ? color : null;
+    return color && (basePalette.includes(color) || customPalette.includes(color) || state.tray.includes(color)) ? color : null;
+  }
+
+  function readCustomPalette() {
+    try {
+      const stored = window.localStorage.getItem(CUSTOM_COLORS_KEY);
+      if (stored === null) return [];
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(normalizeColor).filter(Boolean);
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function persistCustomPalette() {
+    try {
+      window.localStorage.setItem(CUSTOM_COLORS_KEY, JSON.stringify(customPalette));
+    } catch (error) {
+      window.alert('This color could not be saved for next time, but you can paint with it now.');
+    }
+  }
+
+  function badgedSwatch(swatchButton, glyph, label, className, onActivate) {
+    const wrap = document.createElement('span');
+    wrap.className = 'swatch-wrap';
+    const badge = document.createElement('button');
+    badge.type = 'button';
+    badge.className = `swatch-badge ${className}`;
+    badge.textContent = glyph;
+    badge.setAttribute('aria-label', label);
+    badge.addEventListener('click', onActivate);
+    wrap.append(swatchButton, badge);
+    return wrap;
   }
 
   function renderSwatches(container, colors, source) {
@@ -235,15 +277,40 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
       button.dataset.color = color;
       button.dataset.source = source;
       button.dataset.index = String(index);
-      button.setAttribute('aria-label', `${source === 'palette' ? 'Base' : 'Mixed'} color ${index + 1}`);
+      const isCustom = source === 'palette' && index >= basePalette.length;
+      const kind = isCustom ? 'Custom' : (source === 'palette' ? 'Base' : 'Mixed');
+      const ordinal = isCustom ? index - basePalette.length + 1 : index + 1;
+      button.setAttribute('aria-label', `${kind} color ${ordinal}`);
       button.setAttribute('aria-pressed', String(state.color === color));
       button.addEventListener('click', () => selectSwatch(color));
-      container.append(button);
+      if (isCustom) {
+        container.append(badgedSwatch(button, '×', `Delete custom color ${ordinal}`, 'swatch-remove', () => removePaletteColor(color)));
+      } else if (source === 'tray') {
+        container.append(badgedSwatch(button, '+', `Keep mixed color ${ordinal} in the palette`, 'swatch-keep', () => addPaletteColor(color)));
+      } else {
+        container.append(button);
+      }
     });
   }
 
+  function syncPickerToggle() {
+    const addButton = paletteContainer.querySelector('.add-color');
+    if (addButton) addButton.setAttribute('aria-expanded', String(!pickerPanel.hidden));
+  }
+
   function renderColorControls() {
-    renderSwatches(paletteContainer, basePalette, 'palette');
+    renderSwatches(paletteContainer, [...basePalette, ...customPalette], 'palette');
+    const addButton = document.createElement('button');
+    addButton.type = 'button';
+    addButton.className = 'add-color';
+    addButton.textContent = '+';
+    addButton.setAttribute('aria-label', 'Add a new color');
+    addButton.addEventListener('click', () => {
+      pickerPanel.hidden = !pickerPanel.hidden;
+      syncPickerToggle();
+    });
+    paletteContainer.append(addButton);
+    syncPickerToggle();
     renderSwatches(trayContainer, state.tray, 'tray');
     applyBlobShapes();
   }
@@ -286,6 +353,70 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     state.pendingMixColor = null;
     if (activeWasTrayColor) state.color = basePalette[0];
     renderColorControls();
+  }
+
+  function addPaletteColor(swatch) {
+    const color = normalizeColor(swatch);
+    if (!color) return false;
+    if (!basePalette.includes(color) && !customPalette.includes(color)) {
+      customPalette.push(color);
+      persistCustomPalette();
+    }
+    // Adding behaves like tapping the new swatch fresh: no carried-over mix pick.
+    state.pendingMixColor = null;
+    selectSwatch(color);
+    soundKit.plop();
+    return true;
+  }
+
+  function removePaletteColor(swatch) {
+    const color = normalizeColor(swatch);
+    if (!color || !customPalette.includes(color)) return false;
+    customPalette = customPalette.filter((kept) => kept !== color);
+    persistCustomPalette();
+    if (state.color === color) state.color = basePalette[0];
+    if (state.pendingMixColor === color) state.pendingMixColor = null;
+    renderColorControls();
+    return true;
+  }
+
+  // The picker spectrum: full hue run left to right, white → pure color → black
+  // top to bottom. Muted colors are deliberately unreachable — desaturating is
+  // the mixing tray's job.
+  function drawPickerSpectrum() {
+    const spectrumContext = pickerSpectrum.getContext('2d', { willReadFrequently: true });
+    const { width, height } = pickerSpectrum;
+    const hueGradient = spectrumContext.createLinearGradient(0, 0, width, 0);
+    for (let stop = 0; stop <= 12; stop += 1) {
+      hueGradient.addColorStop(stop / 12, `hsl(${Math.round((stop / 12) * 360)}, 100%, 50%)`);
+    }
+    spectrumContext.fillStyle = hueGradient;
+    spectrumContext.fillRect(0, 0, width, height);
+    const lightGradient = spectrumContext.createLinearGradient(0, 0, 0, height);
+    lightGradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+    lightGradient.addColorStop(0.5, 'rgba(255, 255, 255, 0)');
+    lightGradient.addColorStop(0.5, 'rgba(0, 0, 0, 0)');
+    lightGradient.addColorStop(1, 'rgba(0, 0, 0, 1)');
+    spectrumContext.fillStyle = lightGradient;
+    spectrumContext.fillRect(0, 0, width, height);
+  }
+
+  let pickerColor = null;
+  let pickerPointerActive = false;
+
+  function samplePickerColor(event) {
+    const rect = pickerSpectrum.getBoundingClientRect();
+    const x = Math.max(0, Math.min(pickerSpectrum.width - 1, Math.round(((event.clientX - rect.left) / rect.width) * pickerSpectrum.width)));
+    const y = Math.max(0, Math.min(pickerSpectrum.height - 1, Math.round(((event.clientY - rect.top) / rect.height) * pickerSpectrum.height)));
+    const pixel = pickerSpectrum.getContext('2d').getImageData(x, y, 1, 1).data;
+    pickerColor = `#${[pixel[0], pixel[1], pixel[2]].map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+    pickerPreview.style.backgroundColor = pickerColor;
+    pickerAddButton.disabled = false;
+  }
+
+  function closePicker() {
+    pickerPanel.hidden = true;
+    syncPickerToggle();
   }
 
   function setHardness(hardness) {
@@ -571,6 +702,20 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   saveButton.addEventListener('click', () => slotStore.save());
   if (saveDeviceButton) saveDeviceButton.addEventListener('click', () => { void saveToDevice(); });
   clearTrayButton.addEventListener('click', clearTray);
+  pickerSpectrum.addEventListener('pointerdown', (event) => {
+    pickerPointerActive = true;
+    samplePickerColor(event);
+  });
+  pickerSpectrum.addEventListener('pointermove', (event) => {
+    if (pickerPointerActive) samplePickerColor(event);
+  });
+  window.addEventListener('pointerup', () => { pickerPointerActive = false; });
+  pickerAddButton.addEventListener('click', () => {
+    if (!pickerColor) return;
+    addPaletteColor(pickerColor);
+    closePicker();
+  });
+  pickerCloseButton.addEventListener('click', closePicker);
   hardnessControls.addEventListener('click', (event) => {
     const button = event.target.closest('[data-hardness]');
     if (button) setHardness(button.dataset.hardness);
@@ -618,6 +763,9 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     selectSwatch,
     mix: mixSwatches,
     clearTray,
+    addPaletteColor,
+    removePaletteColor,
+    getCustomColors: () => [...customPalette],
     mixColors,
     setSound(enabled) { soundKit.setEnabled(enabled); renderSoundToggle(); },
     sim: {
@@ -641,6 +789,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
         pressureEffective: effectivePressure(state.pressure),
         waterEffective: effectiveWater(state.water),
         palette: [...basePalette],
+        customPalette: [...customPalette],
         tray: [...state.tray],
         pendingMix: state.pendingMixColor,
         sound: soundKit.isEnabled(),
@@ -650,6 +799,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   };
   window.studio = api;
 
+  drawPickerSpectrum();
   renderColorControls();
   renderBrushControls();
   renderPressure();
