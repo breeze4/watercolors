@@ -45,6 +45,12 @@ js/rng.js       seeded noise
 A separate private repo adds paint-along episodes on top of this app; it serves
 these same files unmodified, so nothing here depends on it.
 
+## Publishing
+
+`.github/workflows/pages.yml` publishes the repo root to GitHub Pages on every
+push to `main` — no build, no manual step. `.nojekyll` keeps Pages from running
+the files through Jekyll.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
