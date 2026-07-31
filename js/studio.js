@@ -107,6 +107,42 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   const undoBudgetBytes = 40 * 1024 * 1024;
   let canvasWidth = 0;
   let canvasHeight = 0;
+
+  // Master paint buffer: CSS-pixel dimensions only ever grow, so a viewport
+  // shrink (rotation, iPad app-switcher round trip) crops the view without
+  // destroying paint — growing back restores it. The overlap is overwritten
+  // with the visible canvas on every resize, so new paint wins there while
+  // off-view regions survive untouched.
+  const master = { canvas: document.createElement('canvas'), cssWidth: 0, cssHeight: 0, dpr: 1 };
+
+  function resetMaster() {
+    master.cssWidth = 0;
+    master.cssHeight = 0;
+  }
+
+  function writeMaster() {
+    if (!canvasWidth || !canvasHeight || canvas.width === 0 || canvas.height === 0) return;
+    const dpr = window.devicePixelRatio || 1;
+    const neededWidth = Math.max(master.cssWidth, canvasWidth);
+    const neededHeight = Math.max(master.cssHeight, canvasHeight);
+    if (master.dpr !== dpr || neededWidth > master.cssWidth || neededHeight > master.cssHeight) {
+      const grown = document.createElement('canvas');
+      grown.width = Math.round(neededWidth * dpr);
+      grown.height = Math.round(neededHeight * dpr);
+      const grownContext = grown.getContext('2d');
+      grownContext.fillStyle = '#fff';
+      grownContext.fillRect(0, 0, grown.width, grown.height);
+      if (master.cssWidth && master.cssHeight) {
+        grownContext.drawImage(master.canvas, 0, 0, Math.round(master.cssWidth * dpr), Math.round(master.cssHeight * dpr));
+      }
+      master.canvas = grown;
+      master.cssWidth = neededWidth;
+      master.cssHeight = neededHeight;
+      master.dpr = dpr;
+    }
+    master.canvas.getContext('2d')
+      .drawImage(canvas, 0, 0, Math.round(canvasWidth * master.dpr), Math.round(canvasHeight * master.dpr));
+  }
   let activePointerId = null;
   let previousPoint = null;
   let presentationReady = false;
@@ -502,6 +538,9 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   // window resizes never spam the undo stack.
   function clearCanvasWithUndo() {
     pushUndoSnapshot();
+    // Clearing means the whole sheet, including regions the master holds
+    // beyond the current view — nothing may reappear on a later grow.
+    resetMaster();
     engineFor(mainSurface).reset();
     if (presentationReady) playWash(washOverlay);
   }
@@ -555,12 +594,9 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     // resizing to that would destroy the painting. Keep the backing store and
     // remeasure when the layout comes back.
     if (bounds.width < 2 || bounds.height < 2) return;
-    const previousWidth = canvasWidth;
-    const previousHeight = canvasHeight;
-    const previous = document.createElement('canvas');
-    previous.width = canvas.width;
-    previous.height = canvas.height;
-    if (previous.width && previous.height) previous.getContext('2d').drawImage(canvas, 0, 0);
+    // Capture into the master before the backing store changes; the master
+    // never shrinks, so this is what makes shrinks non-destructive.
+    writeMaster();
     const dpr = window.devicePixelRatio || 1;
     canvasWidth = Math.max(1, Math.round(bounds.width));
     canvasHeight = Math.max(1, Math.round(bounds.height));
@@ -568,8 +604,11 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     canvas.height = Math.round(canvasHeight * dpr);
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     clearCanvas();
-    // Responsive paint-along relayouts keep the same sheet of paper intact.
-    if (previousWidth && previousHeight) context.drawImage(previous, 0, 0, previousWidth, previousHeight);
+    // Restore from the master at CSS scale, top-left anchored — the same sheet
+    // of paper, cropped by the current view rather than truncated for good.
+    if (master.cssWidth && master.cssHeight) {
+      context.drawImage(master.canvas, 0, 0, master.cssWidth, master.cssHeight);
+    }
     // The engine rebuilds for the new backing-store size and rehydrates from
     // the restored image; the fresh render repaints the paper texture.
     engineFor(mainSurface).render(true);
@@ -657,6 +696,9 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     storageKey: 'splotchbox.save-slots.v1',
     onBeforeDraw: pushUndoSnapshot,
     onAfterDraw() {
+      // A loaded slot replaces the whole sheet — drop any off-view paint the
+      // master held for the previous painting.
+      resetMaster();
       // Loaded paintings come back dry; the sim rehydrates deposited pigment
       // from the image so new water can still lift and mingle with it.
       const engine = engineFor(mainSurface);
