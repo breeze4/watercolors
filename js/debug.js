@@ -7,10 +7,24 @@
 
 import { setDebugTiming } from './fluid.js';
 
+// Caps bound what the *panel* holds for drawing. Reporting is append-only, so
+// the server keeps the whole run; a cap may only drop records the server has
+// already acknowledged (see trimSent).
 const TIMELINE_CAP = 3600;
 const STROKE_CAP = 1000;
 const SAMPLE_MS = 1000;
 const REPORT_EVERY_MS = 60 * 1000;
+// Volume triggers, not just the timer. Both sendBeacon and keepalive fetch
+// refuse bodies past roughly 64KB, and a minute of painting at the generator's
+// top rate is about 130KB — so a time-only trigger leaves the page-hide flush
+// too big to send, which is how it silently never worked. These bound any
+// single delta to around 47KB.
+const REPORT_PENDING_SAMPLES = 30;
+const REPORT_PENDING_STROKES = 200;
+// Below this a sample covered too little wall time to mean anything — the
+// first tick after start-up, or a window that straddled a visibility change.
+// It is recorded, but it is not a frame-rate measurement.
+const MIN_MEASURED_FRAMES = 5;
 const CHART_WIDTH = 272;
 const CHART_HEIGHT = 40;
 
@@ -32,6 +46,10 @@ function makeId() {
   if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
   // Old-Safari fallback; uniqueness only has to hold across debug sessions.
   return 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16));
+}
+
+function sameGrid(a, b) {
+  return Boolean(a) && Boolean(b) && a.width === b.width && a.height === b.height;
 }
 
 // One chart: a labeled current value plus a line (or bar) drawing of the
@@ -143,11 +161,22 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
   let sessionId = null;
   let startedAt = 0;
   let startedAtIso = '';
+  // Stamped once when the session starts. Read at report time instead and a
+  // window resize or a DevTools device-emulation toggle rewrites the identity
+  // of everything already recorded — which is exactly how a Windows session
+  // came back labelled as a Pixel 9.
+  let sessionMeta = null;
+  let continuedFrom = null;
   let lastPasses = null;
   let lastSampleAt = 0;
   let lastReportAt = 0;
-  let lastReportedSamples = 0;
-  let latestStats = null;
+  // Absolute record counts, so trimming the display window never confuses the
+  // append offsets. sentX is what the server has; xOffset is the absolute
+  // index of the first record still held locally.
+  let sentSamples = 0;
+  let sentStrokes = 0;
+  let sampleOffset = 0;
+  let strokeOffset = 0;
   let frameBucket = [];
   let openStroke = null;
   let strokeCount = 0;
@@ -367,7 +396,18 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     const frames = frameBucket;
     frameBucket = [];
     const stats = getEngineStats();
-    latestStats = stats;
+    // A resize (or a device-emulation toggle) rebuilds the engine at a new
+    // grid. Every per-cell number is keyed to that geometry, so the run splits
+    // here rather than carrying two grids under one id: close the old session
+    // out, start a fresh one that names it, and drop this straddling sample.
+    if (sessionMeta && !sameGrid(sessionMeta.grid, stats.grid)) {
+      void sendReport('grid-changed');
+      const previous = sessionId;
+      resetSession(previous);
+      renderSessionId();
+      setReportStatus('Canvas resized — new session started.');
+      return;
+    }
     const avg = (key) => (frames.length ? frames.reduce((sum, frame) => sum + frame[key], 0) / frames.length : 0);
     const gridCells = stats.grid.width * stats.grid.height;
     const strokesAdded = strokesThisSample;
@@ -378,7 +418,15 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     const box = stats.activeBox;
     const boxCells = box ? (box.right - box.left + 1) * (box.bottom - box.top + 1) : 0;
     const entry = {
-      t: Math.round((sampledAt - startedAt) / 1000),
+      // Exact elapsed ms. Rounded seconds collided whenever the timer drifted
+      // past a boundary, leaving samples that could not be told apart.
+      tMs: Math.round(sampledAt - startedAt),
+      // The raw counts behind the rates below. Without them a partial start-up
+      // window is indistinguishable from a genuine stall, and a start-up
+      // artifact reads as the session's worst frame rate.
+      frames: frames.length,
+      elapsedMs: Math.round(elapsed),
+      strokesAdded,
       fps: elapsed > 0 ? (frames.length * 1000) / elapsed : 0,
       tickMs: avg('tickMs'),
       renderMs: avg('renderMs'),
@@ -395,11 +443,14 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
       ...passDelta(stats.passes || {}, frames.length),
     };
     timeline.push(entry);
-    if (timeline.length > TIMELINE_CAP) timeline.splice(0, timeline.length - TIMELINE_CAP);
+    trimSent();
     redraw(entry);
-    if (sampledAt - lastReportAt > REPORT_EVERY_MS && timeline.length > lastReportedSamples) {
-      void sendReport('periodic');
-    }
+    const pendingSamples = sampleOffset + timeline.length - sentSamples;
+    const pendingStrokes = strokeOffset + strokes.length - sentStrokes;
+    const due = sampledAt - lastReportAt > REPORT_EVERY_MS
+      || pendingSamples >= REPORT_PENDING_SAMPLES
+      || pendingStrokes >= REPORT_PENDING_STROKES;
+    if (due && (pendingSamples > 0 || pendingStrokes > 0)) void sendReport('periodic');
   }
 
   function redraw(entry) {
@@ -417,10 +468,9 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     memoryNode.textContent = `Undo stack: ${undo.count} snapshots holding ${(undo.bytes / 1048576).toFixed(1)} MB.`;
   }
 
-  function recordFrame(tickMs, renderMs, stats) {
+  function recordFrame(tickMs, renderMs) {
     if (!enabled) return;
     frameBucket.push({ tickMs, renderMs });
-    latestStats = stats;
     if (openStroke) openStroke.simMs += tickMs + renderMs;
   }
 
@@ -449,7 +499,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
       msPer100: (totalMs / Math.max(1, lengthCss)) * 100,
     };
     strokes.push(record);
-    if (strokes.length > STROKE_CAP) strokes.splice(0, strokes.length - STROKE_CAP);
+    trimSent();
     strokesThisSample += 1;
     openStroke = null;
     if (lastStrokeNode) {
@@ -458,43 +508,126 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     }
   }
 
-  function reportPayload() {
+  // Everything that identifies the device and its geometry, read once. A
+  // resize or an emulation toggle after this point starts a new session
+  // instead of rewriting the identity of what is already recorded.
+  function stampMeta() {
     const versionTag = document.querySelector('.version-tag');
-    const stats = latestStats || getEngineStats();
+    const stats = getEngineStats();
+    return {
+      startedAt: startedAtIso,
+      userAgent: navigator.userAgent,
+      devicePixelRatio: window.devicePixelRatio || 1,
+      screen: { width: window.screen.width, height: window.screen.height },
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      grid: { ...stats.grid },
+      version: versionTag ? versionTag.textContent.trim() : 'unknown',
+    };
+  }
+
+  // Caps bound what the panel holds for drawing, not what gets reported: the
+  // server has the whole run. Only acknowledged records may be dropped, so
+  // hitting a cap can never destroy history that was never sent.
+  function trimSent() {
+    const spareSamples = Math.min(timeline.length - TIMELINE_CAP, sentSamples - sampleOffset);
+    if (spareSamples > 0) {
+      timeline.splice(0, spareSamples);
+      sampleOffset += spareSamples;
+    }
+    const spareStrokes = Math.min(strokes.length - STROKE_CAP, sentStrokes - strokeOffset);
+    if (spareStrokes > 0) {
+      strokes.splice(0, spareStrokes);
+      strokeOffset += spareStrokes;
+    }
+  }
+
+  // Only the records the server does not have yet. `from` is the absolute
+  // index of the first one, which is what lets the server append instead of
+  // replacing — and therefore what stops a short post clobbering a long run.
+  function reportPayload({ full = false } = {}) {
+    const sampleFrom = full ? 0 : Math.max(sentSamples, sampleOffset);
+    const strokeFrom = full ? 0 : Math.max(sentStrokes, strokeOffset);
+    const meta = {
+      ...sessionMeta,
+      durationS: Math.round((performance.now() - startedAt) / 1000),
+      strokesPainted: strokeCount,
+    };
+    if (continuedFrom) meta.continuedFrom = continuedFrom;
+    if (full && sampleOffset > 0) meta.truncatedHead = true;
     return {
       id: sessionId,
-      meta: {
-        startedAt: startedAtIso,
-        durationS: Math.round((performance.now() - startedAt) / 1000),
-        userAgent: navigator.userAgent,
-        devicePixelRatio: window.devicePixelRatio || 1,
-        screen: { width: window.screen.width, height: window.screen.height },
-        viewport: { width: window.innerWidth, height: window.innerHeight },
-        grid: stats.grid,
-        version: versionTag ? versionTag.textContent.trim() : 'unknown',
-        strokesPainted: strokeCount,
-      },
-      timeline: [...timeline],
-      strokes: [...strokes],
+      meta,
+      from: { samples: sampleFrom, strokes: strokeFrom },
+      timeline: full ? [...timeline] : timeline.slice(sampleFrom - sampleOffset),
+      strokes: full ? [...strokes] : strokes.slice(strokeFrom - strokeOffset),
     };
+  }
+
+  // A full replace re-bases local numbering on what the server now holds.
+  function commitSent(payload, full) {
+    if (full) {
+      sampleOffset = 0;
+      strokeOffset = 0;
+      sentSamples = payload.timeline.length;
+      sentStrokes = payload.strokes.length;
+    } else {
+      sentSamples = payload.from.samples + payload.timeline.length;
+      sentStrokes = payload.from.strokes + payload.strokes.length;
+    }
+    trimSent();
+  }
+
+  // The server is the authority on how much of this session it holds. Adopting
+  // its counts covers the ordinary race — a beacon landing while a periodic
+  // post was in flight — without throwing away history to resync.
+  function reconcile(expected) {
+    if (!expected) return false;
+    const samplesFit = expected.samples >= sampleOffset && expected.samples <= sampleOffset + timeline.length;
+    const strokesFit = expected.strokes >= strokeOffset && expected.strokes <= strokeOffset + strokes.length;
+    if (!samplesFit || !strokesFit) return false;
+    sentSamples = expected.samples;
+    sentStrokes = expected.strokes;
+    return true;
   }
 
   function setReportStatus(text) {
     if (reportStatusNode) reportStatusNode.textContent = text;
   }
 
-  async function sendReport(reason) {
+  async function sendReport(reason, options = {}) {
     if (!hasBackend) return { sent: false, reason: 'no backend' };
     if (!sessionId || timeline.length === 0) return { sent: false, reason: 'no data' };
+    const full = Boolean(options.full);
+    const payload = reportPayload({ full });
+    if (!full && payload.timeline.length === 0 && payload.strokes.length === 0) {
+      return { sent: false, reason: 'nothing new' };
+    }
+    // Closing a session out (a grid split, a manual clear) starts a new one
+    // while this post is still in flight. The offsets it acknowledges belong
+    // to the session it was built from, so they must not land on its successor.
+    const forSession = sessionId;
     lastReportAt = performance.now();
-    lastReportedSamples = timeline.length;
     try {
       const response = await fetch('api/debug-stats', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(reportPayload()),
+        body: JSON.stringify(payload),
       });
+      // Offsets drifted from the server's. Adopt its counts where the delta is
+      // still reproducible from what we hold; otherwise replace wholesale.
+      if (sessionId !== forSession) {
+        // The session ended mid-flight; its records are the server's problem
+        // now and nothing here applies to the run that replaced it.
+        return { sent: response.ok, id: forSession, reason: 'session closed' };
+      }
+      if (response.status === 409 && !full && !options.retry) {
+        const conflict = await response.json().catch(() => null);
+        return reconcile(conflict && conflict.expected)
+          ? sendReport(reason, { retry: true })
+          : sendReport(reason, { full: true });
+      }
       if (!response.ok) throw new Error(`status ${response.status}`);
+      commitSent(payload, full);
       setReportStatus(`Report sent (${reason}).`);
       return { sent: true, id: sessionId };
     } catch (sendError) {
@@ -504,22 +637,48 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     }
   }
 
-  // A device pocketed mid-run still reports: beacons survive page hide where
-  // fetch may not. Same idempotent session id, so it lands as an update.
+  // A device pocketed mid-run still reports. sendBeacon silently refuses
+  // payloads past its ~64KB cap and returns false — which is why this path
+  // never once flushed a real session before deltas made the payload small.
+  // keepalive fetch is the fallback, and it also survives the page going away.
   function beaconOnHide() {
-    if (!hasBackend || !enabled || !document.hidden || timeline.length === 0 || !navigator.sendBeacon) return;
-    navigator.sendBeacon('api/debug-stats', JSON.stringify(reportPayload()));
+    if (!hasBackend || !enabled || !document.hidden || timeline.length === 0) return;
+    const payload = reportPayload();
+    if (payload.timeline.length === 0 && payload.strokes.length === 0) return;
+    const body = JSON.stringify(payload);
+    const forSession = sessionId;
+    const queued = Boolean(navigator.sendBeacon)
+      && navigator.sendBeacon('api/debug-stats', new Blob([body], { type: 'application/json' }));
+    if (queued) {
+      commitSent(payload, false);
+      return;
+    }
+    void fetch('api/debug-stats', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      keepalive: true,
+    }).then((response) => {
+      if (sessionId !== forSession) return;
+      if (response.ok) commitSent(payload, false);
+      else setReportStatus('Final report could not be flushed.');
+    }).catch(() => setReportStatus('Final report could not be flushed.'));
   }
 
   // Everything that makes a session a session, so starting one and clearing
   // one can never drift apart.
-  function resetSession() {
+  function resetSession(previousId = null) {
     sessionId = makeId();
+    continuedFrom = previousId;
     startedAt = performance.now();
     startedAtIso = new Date().toISOString();
+    sessionMeta = stampMeta();
     lastSampleAt = startedAt;
     lastReportAt = startedAt;
-    lastReportedSamples = 0;
+    sentSamples = 0;
+    sentStrokes = 0;
+    sampleOffset = 0;
+    strokeOffset = 0;
     timeline.length = 0;
     strokes.length = 0;
     strokeCount = 0;
@@ -544,7 +703,9 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     renderSessionId();
     if (lastStrokeNode) lastStrokeNode.textContent = 'No strokes painted yet.';
     setReportStatus('New session started.');
-    redraw({ t: 0, fps: 0, tickMs: 0, renderMs: 0, wetPct: 0, heapMB: 0, strokes: 0, autoRate: 0 });
+    // Every field redraw reads has to be present — a missing one throws here,
+    // which used to leave a cleared session with a dead panel.
+    redraw({ tMs: 0, fps: 0, tickMs: 0, renderMs: 0, wetPct: 0, boxPct: 0, heapMB: 0, strokes: 0, autoRate: 0 });
     return sessionId;
   }
 
@@ -564,6 +725,9 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
 
   function hide() {
     if (!enabled) return;
+    // Flush the tail before going quiet: everything painted since the last
+    // report is otherwise lost when debug mode is switched off.
+    void sendReport('debug-off');
     enabled = false;
     setDebugTiming(false);
     stopAuto();
