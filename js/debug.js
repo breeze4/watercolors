@@ -1,57 +1,217 @@
-// Debug stats panel: live engine metrics overlaid on the studio, off by
+// Debug perf panel: live engine metrics overlaid on the studio, off by
 // default and costing nothing until enabled (?debug=1 or studio.debug).
-// The panel is an instrument, not a tin: monospace text plus one sparkline
-// of normalized per-stroke cost — the number that should stay flat as a
-// painting accumulates strokes.
+// Readable by humans: full-word labels, one time-series chart per moving
+// metric, and an auto-stroke generator for repeatable soak runs. Sessions
+// post themselves to the backend's debug-stats API (where one exists) so a
+// run on any device can be read and analyzed later.
 
 import { setDebugTiming } from './fluid.js';
 
-const FRAME_WINDOW = 120;
-const STROKE_HISTORY = 200;
-const TEXT_REFRESH_MS = 250;
-const SPARK_WIDTH = 220;
-const SPARK_HEIGHT = 46;
+const TIMELINE_CAP = 3600;
+const STROKE_CAP = 1000;
+const SAMPLE_MS = 1000;
+const REPORT_EVERY_MS = 60 * 1000;
+const CHART_WIDTH = 272;
+const CHART_HEIGHT = 40;
+
+// Categorical palette for the sim-pass chart, fixed order by typical
+// magnitude. Validated against the panel surface (#161a1f) for lightness
+// band, chroma, CVD separation, and contrast — change only with a re-run
+// of the palette validator.
+const PASS_SERIES = [
+  { key: 'advect', label: 'advect', color: '#1f9c8d' },
+  { key: 'evap', label: 'evaporate', color: '#c07f1d' },
+  { key: 'velocity', label: 'velocity', color: '#6b78d8' },
+  { key: 'project', label: 'project', color: '#cf5f8d' },
+  { key: 'mask', label: 'mask', color: '#86982a' },
+];
+const LINE_COLOR = '#1f9c8d';
+const INK_MUTED = '#7d8b94';
+
+function makeId() {
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+  // Old-Safari fallback; uniqueness only has to hold across debug sessions.
+  return 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => ((Math.random() * 16) | 0).toString(16));
+}
+
+// One chart: a labeled current value plus a line (or bar) drawing of the
+// whole recorded history, downsampled by bucket-max to fit the width.
+function makeChart({ label, format, color = LINE_COLOR, bars = false, series = null }) {
+  const root = document.createElement('div');
+  root.className = 'debug-chart';
+  const header = document.createElement('div');
+  header.className = 'debug-chart-header';
+  const labelNode = document.createElement('span');
+  labelNode.className = 'debug-chart-label';
+  labelNode.textContent = label;
+  const valueNode = document.createElement('span');
+  valueNode.className = 'debug-chart-value';
+  header.append(labelNode, valueNode);
+  const canvas = document.createElement('canvas');
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(CHART_WIDTH * dpr);
+  canvas.height = Math.round(CHART_HEIGHT * dpr);
+  canvas.style.width = `${CHART_WIDTH}px`;
+  canvas.style.height = `${CHART_HEIGHT}px`;
+  root.append(header, canvas);
+  if (series) {
+    const legend = document.createElement('div');
+    legend.className = 'debug-legend';
+    for (const entry of series) {
+      const item = document.createElement('span');
+      const dot = document.createElement('span');
+      dot.className = 'debug-legend-dot';
+      dot.style.backgroundColor = entry.color;
+      item.append(dot, document.createTextNode(entry.label));
+      legend.append(item);
+    }
+    root.append(legend);
+  }
+
+  function bucketMax(values, buckets) {
+    const out = new Array(buckets).fill(0);
+    const per = values.length / buckets;
+    for (let bucket = 0; bucket < buckets; bucket += 1) {
+      const from = Math.floor(bucket * per);
+      const to = Math.max(from + 1, Math.floor((bucket + 1) * per));
+      let max = 0;
+      for (let index = from; index < to && index < values.length; index += 1) {
+        if (values[index] > max) max = values[index];
+      }
+      out[bucket] = max;
+    }
+    return out;
+  }
+
+  function draw(history, currentText) {
+    valueNode.textContent = currentText;
+    const brush = canvas.getContext('2d');
+    brush.setTransform(dpr, 0, 0, dpr, 0, 0);
+    brush.clearRect(0, 0, CHART_WIDTH, CHART_HEIGHT);
+    const rows = series ? series.map((entry) => history.map((sample) => sample[entry.key] || 0)) : [history];
+    let max = 0;
+    for (const row of rows) {
+      for (const value of row) {
+        if (value > max) max = value;
+      }
+    }
+    if (max <= 0 || history.length < 2) return;
+    const plotHeight = CHART_HEIGHT - 12;
+    rows.forEach((row, rowIndex) => {
+      const strokeColor = series ? series[rowIndex].color : color;
+      if (bars) {
+        const buckets = bucketMax(row, Math.floor(CHART_WIDTH / 3));
+        brush.fillStyle = strokeColor;
+        buckets.forEach((value, index) => {
+          const height = Math.max(value > 0 ? 1 : 0, (value / max) * plotHeight);
+          brush.fillRect(index * 3, CHART_HEIGHT - height, 2, height);
+        });
+      } else {
+        const points = row.length > CHART_WIDTH ? bucketMax(row, CHART_WIDTH) : row;
+        const stepX = CHART_WIDTH / (points.length - 1 || 1);
+        brush.strokeStyle = strokeColor;
+        brush.lineWidth = 1.5;
+        brush.beginPath();
+        points.forEach((value, index) => {
+          const x = index * stepX;
+          const y = CHART_HEIGHT - (value / max) * plotHeight;
+          if (index === 0) brush.moveTo(x, y);
+          else brush.lineTo(x, y);
+        });
+        brush.stroke();
+      }
+    });
+    brush.fillStyle = INK_MUTED;
+    brush.font = `10px -apple-system, system-ui, sans-serif`;
+    brush.fillText(`max ${format(max)}`, 2, 9);
+  }
+
+  return { root, draw };
+}
 
 export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke }) {
   let enabled = false;
   let panel = null;
-  let textNode = null;
-  let spark = null;
-  let idleTimer = null;
-  let lastTextAt = 0;
+  let sampleTimer = null;
+  let sessionId = null;
+  let startedAt = 0;
+  let startedAtIso = '';
   let lastPasses = null;
+  let lastSampleAt = 0;
+  let lastReportAt = 0;
+  let lastReportedSamples = 0;
   let latestStats = null;
-  // Auto-stroke generator: fills the canvas at a steady rate so perf
-  // characteristics show up without hand-painting hundreds of strokes.
+  let frameBucket = [];
+  let openStroke = null;
+  let strokeCount = 0;
   let autoTimer = null;
-  let autoRate = 1;
+  let autoRate = 3;
+  // Armed by main.js from its one api/health probe. Until then (and forever
+  // on backend-free hosts like GitHub Pages) debug mode makes no API calls.
+  let hasBackend = false;
+  let reportRow = null;
+
+  const timeline = [];
+  const strokes = [];
+
+  const charts = {};
+  let lastStrokeNode = null;
+  let memoryNode = null;
   let autoButton = null;
   let rateInput = null;
   let rateLabel = null;
+  let reportStatusNode = null;
 
-  const frames = [];
-  const strokes = [];
-  let strokeCount = 0;
-  // The stroke being painted right now; sim frame time lands here until
-  // strokeEnd closes it out.
-  let openStroke = null;
+  function section(title) {
+    const heading = document.createElement('div');
+    heading.className = 'debug-section-title';
+    heading.textContent = title;
+    return heading;
+  }
 
   function ensurePanel() {
     if (panel) return;
     panel = document.createElement('div');
     panel.className = 'debug-panel';
-    panel.setAttribute('aria-hidden', 'true');
-    textNode = document.createElement('pre');
-    spark = document.createElement('canvas');
-    spark.width = SPARK_WIDTH;
-    spark.height = SPARK_HEIGHT;
-    panel.append(textNode, spark);
+    const header = document.createElement('div');
+    header.className = 'debug-header';
+    const title = document.createElement('span');
+    title.textContent = 'Performance monitor';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = '×';
+    close.setAttribute('aria-label', 'Close performance monitor');
+    close.addEventListener('click', hide);
+    header.append(title, close);
+    panel.append(header);
+
+    charts.fps = makeChart({ label: 'Frame rate', format: (v) => `${v.toFixed(0)} fps` });
+    charts.tick = makeChart({ label: 'Simulation time per frame', format: (v) => `${v.toFixed(1)} ms` });
+    charts.render = makeChart({ label: 'Render time per frame', format: (v) => `${v.toFixed(1)} ms` });
+    charts.wet = makeChart({ label: 'Wet area (share of canvas)', format: (v) => `${v.toFixed(0)}%` });
+    charts.passes = makeChart({ label: 'Simulation passes (ms per frame)', format: (v) => `${v.toFixed(1)} ms`, series: PASS_SERIES });
+    charts.stroke = makeChart({ label: 'Stroke cost (ms per 100 px)', format: (v) => `${v.toFixed(1)}`, bars: true });
+    charts.heap = makeChart({ label: 'JS heap memory', format: (v) => `${v.toFixed(0)} MB` });
+
+    panel.append(charts.fps.root, charts.tick.root, charts.render.root, charts.wet.root, charts.passes.root, charts.stroke.root);
+
+    panel.append(section('Latest stroke'));
+    lastStrokeNode = document.createElement('div');
+    lastStrokeNode.className = 'debug-text';
+    lastStrokeNode.textContent = 'No strokes painted yet.';
+    panel.append(lastStrokeNode);
+
+    panel.append(charts.heap.root);
+    memoryNode = document.createElement('div');
+    memoryNode.className = 'debug-text';
+    panel.append(memoryNode);
+
     if (paintTestStroke) {
+      panel.append(section('Auto strokes'));
       const controls = document.createElement('div');
       controls.className = 'debug-controls';
       autoButton = document.createElement('button');
       autoButton.type = 'button';
-      autoButton.textContent = '▶ auto';
       autoButton.addEventListener('click', () => (autoTimer ? stopAuto() : startAuto(autoRate)));
       rateInput = document.createElement('input');
       rateInput.type = 'range';
@@ -59,10 +219,10 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
       rateInput.max = '10';
       rateInput.step = '1';
       rateInput.value = String(autoRate);
+      rateInput.setAttribute('aria-label', 'Auto strokes per second');
       rateInput.addEventListener('input', () => {
         autoRate = Number(rateInput.value);
         renderAutoControls();
-        // A live rate change retimes a running generator in place.
         if (autoTimer) startAuto(autoRate);
       });
       rateLabel = document.createElement('span');
@@ -70,13 +230,31 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
       panel.append(controls);
       renderAutoControls();
     }
+
+    reportRow = document.createElement('div');
+    reportRow.className = 'debug-controls';
+    const reportButton = document.createElement('button');
+    reportButton.type = 'button';
+    reportButton.textContent = 'Send report';
+    reportButton.addEventListener('click', () => { void sendReport('manual'); });
+    reportStatusNode = document.createElement('span');
+    reportStatusNode.className = 'debug-report-status';
+    reportRow.append(reportButton, reportStatusNode);
+    panel.append(reportRow);
+    renderReportRow();
+
     document.body.append(panel);
+  }
+
+  function renderReportRow() {
+    if (!reportRow) return;
+    reportRow.hidden = !hasBackend;
   }
 
   function renderAutoControls() {
     if (!rateLabel) return;
-    rateLabel.textContent = `${autoRate}/s`;
-    autoButton.textContent = autoTimer ? '⏸ auto' : '▶ auto';
+    rateLabel.textContent = `${autoRate} per second`;
+    autoButton.textContent = autoTimer ? '⏸ Pause' : '▶ Start';
   }
 
   function startAuto(rate) {
@@ -94,101 +272,71 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
     if (autoTimer !== null) {
       window.clearInterval(autoTimer);
       autoTimer = null;
+      // A finished auto-run is exactly the session someone will want to read
+      // from another machine — ship it without asking.
+      void sendReport('auto-stop');
     }
     renderAutoControls();
   }
 
-  function frameRollup() {
-    if (frames.length === 0) return { fps: 0, tickMsAvg: 0, renderMsAvg: 0, lastTickMs: 0, lastRenderMs: 0, count: 0 };
-    let tickTotal = 0;
-    let renderTotal = 0;
-    for (const frame of frames) {
-      tickTotal += frame.tickMs;
-      renderTotal += frame.renderMs;
-    }
-    const last = frames[frames.length - 1];
-    const span = last.at - frames[0].at;
-    return {
-      fps: frames.length > 1 && span > 0 ? ((frames.length - 1) * 1000) / span : 0,
-      tickMsAvg: tickTotal / frames.length,
-      renderMsAvg: renderTotal / frames.length,
-      lastTickMs: last.tickMs,
-      lastRenderMs: last.renderMs,
-      count: frames.length,
-    };
-  }
-
   // Pass counters are cumulative per engine (and reset when a resize rebuilds
-  // the engine), so the panel shows the delta since the last refresh and
-  // clamps a rebuild's backward jump to zero.
-  function passDelta(passes) {
+  // the engine); show the per-frame delta and clamp rebuild jumps to zero.
+  function passDelta(passes, frames) {
     const delta = {};
     for (const name of Object.keys(passes)) {
-      delta[name] = lastPasses ? Math.max(0, passes[name] - (lastPasses[name] || 0)) : 0;
+      const raw = lastPasses ? Math.max(0, passes[name] - (lastPasses[name] || 0)) : 0;
+      delta[name] = frames > 0 ? raw / frames : 0;
     }
     lastPasses = { ...passes };
     return delta;
   }
 
-  function heapLine() {
+  function sample() {
+    const sampledAt = performance.now();
+    const elapsed = sampledAt - lastSampleAt;
+    lastSampleAt = sampledAt;
+    const frames = frameBucket;
+    frameBucket = [];
+    const stats = getEngineStats();
+    latestStats = stats;
+    const avg = (key) => (frames.length ? frames.reduce((sum, frame) => sum + frame[key], 0) / frames.length : 0);
+    const gridCells = stats.grid.width * stats.grid.height;
+    const entry = {
+      t: Math.round((sampledAt - startedAt) / 1000),
+      fps: elapsed > 0 ? (frames.length * 1000) / elapsed : 0,
+      tickMs: avg('tickMs'),
+      renderMs: avg('renderMs'),
+      wetPct: gridCells > 0 ? (stats.wetCells / gridCells) * 100 : 0,
+      heapMB: performance.memory ? performance.memory.usedJSHeapSize / 1048576 : 0,
+      ...passDelta(stats.passes || {}, frames.length),
+    };
+    timeline.push(entry);
+    if (timeline.length > TIMELINE_CAP) timeline.splice(0, timeline.length - TIMELINE_CAP);
+    redraw(entry);
+    if (sampledAt - lastReportAt > REPORT_EVERY_MS && timeline.length > lastReportedSamples) {
+      void sendReport('periodic');
+    }
+  }
+
+  function redraw(entry) {
+    if (!panel) return;
+    charts.fps.draw(timeline.map((s) => s.fps), `${entry.fps.toFixed(0)} fps`);
+    charts.tick.draw(timeline.map((s) => s.tickMs), `${entry.tickMs.toFixed(1)} ms`);
+    charts.render.draw(timeline.map((s) => s.renderMs), `${entry.renderMs.toFixed(1)} ms`);
+    charts.wet.draw(timeline.map((s) => s.wetPct), `${entry.wetPct.toFixed(0)}% wet`);
+    const passTotal = PASS_SERIES.reduce((sum, seriesEntry) => sum + (entry[seriesEntry.key] || 0), 0);
+    charts.passes.draw(timeline, `${passTotal.toFixed(1)} ms total`);
+    charts.heap.draw(timeline.map((s) => s.heapMB), entry.heapMB ? `${entry.heapMB.toFixed(0)} MB` : 'n/a');
+    charts.stroke.draw(strokes.map((s) => s.msPer100), strokes.length ? `${strokes[strokes.length - 1].msPer100.toFixed(1)} ms/100px` : '—');
     const undo = getUndoInfo();
-    const undoMb = (undo.bytes / (1024 * 1024)).toFixed(1);
-    const heap = performance.memory ? ` heap ${(performance.memory.usedJSHeapSize / (1024 * 1024)).toFixed(0)}MB` : '';
-    return `undo ${undo.count} snaps ${undoMb}MB${heap}`;
-  }
-
-  function refreshText() {
-    if (!enabled || !textNode) return;
-    lastTextAt = performance.now();
-    const rollup = frameRollup();
-    const stats = latestStats || getEngineStats();
-    const lines = [];
-    lines.push(`fps ${rollup.fps.toFixed(0)}  tick ${rollup.tickMsAvg.toFixed(2)}ms  render ${rollup.renderMsAvg.toFixed(2)}ms`);
-    const box = stats.activeBox ? `${stats.activeBox.right - stats.activeBox.left + 1}×${stats.activeBox.bottom - stats.activeBox.top + 1}` : 'dry';
-    lines.push(`wet ${stats.wetCells}  box ${box}  grid ${stats.grid.width}×${stats.grid.height}`);
-    if (stats.passes) {
-      const delta = passDelta(stats.passes);
-      lines.push(`pass mask ${delta.mask.toFixed(1)} evap ${delta.evap.toFixed(1)} vel ${delta.velocity.toFixed(1)}`);
-      lines.push(`     adv ${delta.advect.toFixed(1)} proj ${delta.project.toFixed(1)} (ms/refresh)`);
-    }
-    const stroke = strokes[strokes.length - 1];
-    if (stroke) {
-      lines.push(`stroke #${stroke.n}: ${stroke.lengthCss.toFixed(0)}px ${stroke.stamps} stamps`);
-      lines.push(`  undo ${stroke.undoMs.toFixed(1)} deposit ${stroke.depositMs.toFixed(1)} sim ${stroke.simMs.toFixed(1)}ms`);
-      lines.push(`  cost ${stroke.msPer100.toFixed(1)} ms/100px`);
-    }
-    lines.push(heapLine());
-    textNode.textContent = lines.join('\n');
-  }
-
-  function drawSparkline() {
-    if (!spark) return;
-    const brush = spark.getContext('2d');
-    brush.clearRect(0, 0, SPARK_WIDTH, SPARK_HEIGHT);
-    if (strokes.length === 0) return;
-    let max = 0;
-    for (const stroke of strokes) {
-      if (stroke.msPer100 > max) max = stroke.msPer100;
-    }
-    if (max <= 0) return;
-    const barWidth = Math.max(1, Math.floor(SPARK_WIDTH / STROKE_HISTORY));
-    brush.fillStyle = '#4db6ac';
-    strokes.forEach((stroke, index) => {
-      const height = Math.max(1, (stroke.msPer100 / max) * (SPARK_HEIGHT - 12));
-      brush.fillRect(index * barWidth, SPARK_HEIGHT - height, barWidth, height);
-    });
-    brush.fillStyle = '#d6e4ea';
-    brush.font = '9px ui-monospace, Menlo, monospace';
-    brush.fillText(`ms/100px  max ${max.toFixed(1)}`, 2, 9);
+    memoryNode.textContent = `Undo stack: ${undo.count} snapshots holding ${(undo.bytes / 1048576).toFixed(1)} MB.`;
   }
 
   function recordFrame(tickMs, renderMs, stats) {
     if (!enabled) return;
-    frames.push({ at: performance.now(), tickMs, renderMs });
-    if (frames.length > FRAME_WINDOW) frames.splice(0, frames.length - FRAME_WINDOW);
+    frameBucket.push({ tickMs, renderMs });
     latestStats = stats;
     if (openStroke) openStroke.simMs += tickMs + renderMs;
-    if (performance.now() - lastTextAt > TEXT_REFRESH_MS) refreshText();
   }
 
   function strokeBegin(undoMs) {
@@ -205,7 +353,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
     strokeCount += 1;
     const lengthCss = engineStroke ? engineStroke.lengthCss : 0;
     const totalMs = openStroke.undoMs + openStroke.depositMs + openStroke.simMs;
-    strokes.push({
+    const record = {
       n: strokeCount,
       lengthCss,
       stamps: engineStroke ? engineStroke.stamps : 0,
@@ -214,23 +362,89 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
       simMs: openStroke.simMs,
       totalMs,
       msPer100: (totalMs / Math.max(1, lengthCss)) * 100,
-    });
-    if (strokes.length > STROKE_HISTORY) strokes.splice(0, strokes.length - STROKE_HISTORY);
+    };
+    strokes.push(record);
+    if (strokes.length > STROKE_CAP) strokes.splice(0, strokes.length - STROKE_CAP);
     openStroke = null;
-    drawSparkline();
-    refreshText();
+    if (lastStrokeNode) {
+      lastStrokeNode.textContent = `Stroke #${record.n}: ${record.lengthCss.toFixed(0)} px, ${record.stamps} stamps — `
+        + `undo copy ${record.undoMs.toFixed(1)} ms, paint ${record.depositMs.toFixed(1)} ms, sim during stroke ${record.simMs.toFixed(1)} ms.`;
+    }
+  }
+
+  function reportPayload() {
+    const versionTag = document.querySelector('.version-tag');
+    const stats = latestStats || getEngineStats();
+    return {
+      id: sessionId,
+      meta: {
+        startedAt: startedAtIso,
+        durationS: Math.round((performance.now() - startedAt) / 1000),
+        userAgent: navigator.userAgent,
+        devicePixelRatio: window.devicePixelRatio || 1,
+        screen: { width: window.screen.width, height: window.screen.height },
+        viewport: { width: window.innerWidth, height: window.innerHeight },
+        grid: stats.grid,
+        version: versionTag ? versionTag.textContent.trim() : 'unknown',
+        strokesPainted: strokeCount,
+      },
+      timeline: [...timeline],
+      strokes: [...strokes],
+    };
+  }
+
+  function setReportStatus(text) {
+    if (reportStatusNode) reportStatusNode.textContent = text;
+  }
+
+  async function sendReport(reason) {
+    if (!hasBackend) return { sent: false, reason: 'no backend' };
+    if (!sessionId || timeline.length === 0) return { sent: false, reason: 'no data' };
+    lastReportAt = performance.now();
+    lastReportedSamples = timeline.length;
+    try {
+      const response = await fetch('api/debug-stats', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(reportPayload()),
+      });
+      if (!response.ok) throw new Error(`status ${response.status}`);
+      setReportStatus(`Report sent (${reason}).`);
+      return { sent: true, id: sessionId };
+    } catch (sendError) {
+      // Pages has no backend; a LAN drop looks the same. Say so and move on.
+      setReportStatus('No backend reachable — report kept locally.');
+      return { sent: false, reason: String(sendError && sendError.message) };
+    }
+  }
+
+  // A device pocketed mid-run still reports: beacons survive page hide where
+  // fetch may not. Same idempotent session id, so it lands as an update.
+  function beaconOnHide() {
+    if (!hasBackend || !enabled || !document.hidden || timeline.length === 0 || !navigator.sendBeacon) return;
+    navigator.sendBeacon('api/debug-stats', JSON.stringify(reportPayload()));
   }
 
   function show() {
     if (enabled) return;
     enabled = true;
+    sessionId = makeId();
+    startedAt = performance.now();
+    startedAtIso = new Date().toISOString();
+    lastSampleAt = startedAt;
+    lastReportAt = startedAt;
+    lastReportedSamples = 0;
+    timeline.length = 0;
+    strokes.length = 0;
+    strokeCount = 0;
+    lastPasses = null;
+    frameBucket = [];
     setDebugTiming(true);
     ensurePanel();
     panel.hidden = false;
-    refreshText();
-    // The ticker only runs while wet, so a slow refresh keeps the memory and
-    // undo lines honest on an idle canvas.
-    idleTimer = window.setInterval(refreshText, 1000);
+    setReportStatus('');
+    sampleTimer = window.setInterval(sample, SAMPLE_MS);
+    document.addEventListener('visibilitychange', beaconOnHide);
   }
 
   function hide() {
@@ -239,16 +453,18 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
     setDebugTiming(false);
     stopAuto();
     if (panel) panel.hidden = true;
-    if (idleTimer !== null) {
-      window.clearInterval(idleTimer);
-      idleTimer = null;
+    if (sampleTimer !== null) {
+      window.clearInterval(sampleTimer);
+      sampleTimer = null;
     }
+    document.removeEventListener('visibilitychange', beaconOnHide);
   }
 
   function getMetrics() {
     return {
       enabled,
-      frames: frameRollup(),
+      sessionId,
+      timeline: timeline.map((entry) => ({ ...entry })),
       strokes: strokes.map((stroke) => ({ ...stroke })),
       memory: { ...getUndoInfo(), heapUsed: performance.memory ? performance.memory.usedJSHeapSize : null },
     };
@@ -269,6 +485,11 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
       startAuto,
       stopAuto,
       isAutoRunning: () => autoTimer !== null,
+      sendReport: () => sendReport('manual'),
+      setBackendAvailable(available) {
+        hasBackend = Boolean(available);
+        renderReportRow();
+      },
     },
   };
 }

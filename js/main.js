@@ -13,6 +13,10 @@ async function loadEpisodeLayer() {
   try {
     const response = await fetch('api/health');
     if (!response.ok) return;
+    // The one probe answers for everyone: the episode layer loads, and the
+    // debug panel may post session reports. Backend-free hosts never see
+    // another API call — debug mode stays client-only there.
+    studio.api.debug.setBackendAvailable(true);
     const { initEpisodes } = await import('./episodes.js');
     initEpisodes(studio);
   } catch (error) {
