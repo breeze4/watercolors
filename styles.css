@@ -139,6 +139,14 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
   .tray-panel { order: 2; }
   .chip-row { order: 3; }
   .save-panel { order: 5; }
+  /* A rounded phone screen clips its corners along an arc, so a corner-anchored
+     element has to clear the curve on both axes, not just the side it looks
+     cut off on: ~4px above the bottom, a 40px corner radius has already eaten
+     ~22px of the right edge. These offsets clear a radius up to ~65px, past
+     the ~55px of the largest current iPhones. Safe-area insets do not help —
+     without viewport-fit=cover they are zero, and they describe the notch and
+     home indicator rather than the corner radius. */
+  .version-tag { right: 22px; bottom: 18px; }
 }
 
 /* Debug performance monitor: an instrument, not a tin. Full-word labels,
