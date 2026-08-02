@@ -158,6 +158,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
   const strokes = [];
 
   const charts = {};
+  let sessionNode = null;
   let lastStrokeNode = null;
   let memoryNode = null;
   let autoButton = null;
@@ -187,6 +188,12 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     close.addEventListener('click', hide);
     header.append(title, close);
     panel.append(header);
+
+    // The short id is how you find this run in the stats viewer's table.
+    sessionNode = document.createElement('div');
+    sessionNode.className = 'debug-session-id';
+    panel.append(sessionNode);
+    renderSessionId();
 
     // Controls first: the charts run past the bottom of a phone screen, and
     // the buttons are what you reach for mid-run.
@@ -240,7 +247,13 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     charts.fps = makeChart({ label: 'Frame rate', format: (v) => `${v.toFixed(0)} fps` });
     charts.tick = makeChart({ label: 'Simulation time per frame', format: (v) => `${v.toFixed(1)} ms` });
     charts.render = makeChart({ label: 'Render time per frame', format: (v) => `${v.toFixed(1)} ms` });
-    charts.wet = makeChart({ label: 'Wet area (share of canvas)', format: (v) => `${v.toFixed(0)}%` });
+    // Two series on one chart on purpose: the gap between simulated area and
+    // genuinely wet area is the thing worth seeing.
+    charts.wet = makeChart({
+      label: 'Simulated area vs wet area',
+      format: (v) => `${v.toFixed(0)}%`,
+      series: [{ key: 'boxPct', label: 'simulated', color: '#c07f1d' }, { key: 'wetPct', label: 'wet', color: '#1f9c8d' }],
+    });
     charts.passes = makeChart({ label: 'Simulation passes (ms per frame)', format: (v) => `${v.toFixed(1)} ms`, series: PASS_SERIES });
     charts.stroke = makeChart({ label: 'Stroke cost (ms per 100 px)', format: (v) => `${v.toFixed(1)}`, bars: true });
     charts.heap = makeChart({ label: 'JS heap memory', format: (v) => `${v.toFixed(0)} MB` });
@@ -264,6 +277,12 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
   function renderReportRow() {
     if (!reportRow) return;
     reportRow.hidden = !hasBackend;
+  }
+
+  function renderSessionId() {
+    if (!sessionNode) return;
+    sessionNode.textContent = `Session ${String(sessionId).slice(0, 8)}`;
+    sessionNode.title = sessionId || '';
   }
 
   function renderAutoControls() {
@@ -318,12 +337,21 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     const gridCells = stats.grid.width * stats.grid.height;
     const strokesAdded = strokesThisSample;
     strokesThisSample = 0;
+    // The simulation passes iterate the active bounding box, not the wet
+    // cells inside it, so the box is the size that predicts frame cost.
+    // Recording both is what makes the two separable in the data.
+    const box = stats.activeBox;
+    const boxCells = box ? (box.right - box.left + 1) * (box.bottom - box.top + 1) : 0;
     const entry = {
       t: Math.round((sampledAt - startedAt) / 1000),
       fps: elapsed > 0 ? (frames.length * 1000) / elapsed : 0,
       tickMs: avg('tickMs'),
       renderMs: avg('renderMs'),
       wetPct: gridCells > 0 ? (stats.wetCells / gridCells) * 100 : 0,
+      boxPct: gridCells > 0 ? (boxCells / gridCells) * 100 : 0,
+      wetCells: stats.wetCells,
+      boxCells,
+      gridCells,
       heapMB: performance.memory ? performance.memory.usedJSHeapSize / 1048576 : 0,
       strokes: elapsed > 0 ? (strokesAdded * 1000) / elapsed : 0,
       // Zero while hand-painting or idle; the set rate while the generator
@@ -345,7 +373,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     charts.fps.draw(timeline.map((s) => s.fps), `${entry.fps.toFixed(0)} fps`);
     charts.tick.draw(timeline.map((s) => s.tickMs), `${entry.tickMs.toFixed(1)} ms`);
     charts.render.draw(timeline.map((s) => s.renderMs), `${entry.renderMs.toFixed(1)} ms`);
-    charts.wet.draw(timeline.map((s) => s.wetPct), `${entry.wetPct.toFixed(0)}% wet`);
+    charts.wet.draw(timeline, `${entry.boxPct.toFixed(0)}% sim / ${entry.wetPct.toFixed(0)}% wet`);
     const passTotal = PASS_SERIES.reduce((sum, seriesEntry) => sum + (entry[seriesEntry.key] || 0), 0);
     charts.passes.draw(timeline, `${passTotal.toFixed(1)} ms total`);
     charts.heap.draw(timeline.map((s) => s.heapMB), entry.heapMB ? `${entry.heapMB.toFixed(0)} MB` : 'n/a');
@@ -478,6 +506,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     void sendReport('session-cleared');
     if (clearCanvas) clearCanvas();
     resetSession();
+    renderSessionId();
     if (lastStrokeNode) lastStrokeNode.textContent = 'No strokes painted yet.';
     setReportStatus('New session started.');
     redraw({ t: 0, fps: 0, tickMs: 0, renderMs: 0, wetPct: 0, heapMB: 0, strokes: 0, autoRate: 0 });
@@ -490,6 +519,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     resetSession();
     setDebugTiming(true);
     ensurePanel();
+    renderSessionId();
     panel.hidden = false;
     setReportStatus('');
     sampleTimer = window.setInterval(sample, SAMPLE_MS);
