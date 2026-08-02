@@ -146,3 +146,7 @@ button:focus-visible { outline: 3px solid #303f9f; outline-offset: 3px; }
 .debug-panel { position: fixed; top: 8px; right: 8px; z-index: 40; padding: 8px 10px; color: #d6e4ea; background: rgba(22, 26, 31, .88); border-radius: 8px; pointer-events: none; user-select: none; }
 .debug-panel pre { margin: 0; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
 .debug-panel canvas { display: block; width: 220px; height: 46px; margin-top: 6px; }
+.debug-controls { display: flex; gap: 6px; align-items: center; margin-top: 6px; pointer-events: auto; }
+.debug-controls button { min-width: 0; min-height: 0; padding: 2px 8px; color: #d6e4ea; font: 11px ui-monospace, Menlo, monospace; background: rgba(255, 255, 255, .12); border-radius: 4px; box-shadow: none; }
+.debug-controls input[type="range"] { width: 110px; }
+.debug-controls span { font: 11px ui-monospace, Menlo, monospace; }

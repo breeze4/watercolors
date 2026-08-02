@@ -12,7 +12,7 @@ const TEXT_REFRESH_MS = 250;
 const SPARK_WIDTH = 220;
 const SPARK_HEIGHT = 46;
 
-export function createDebugPanel({ getUndoInfo, getEngineStats }) {
+export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke }) {
   let enabled = false;
   let panel = null;
   let textNode = null;
@@ -21,6 +21,13 @@ export function createDebugPanel({ getUndoInfo, getEngineStats }) {
   let lastTextAt = 0;
   let lastPasses = null;
   let latestStats = null;
+  // Auto-stroke generator: fills the canvas at a steady rate so perf
+  // characteristics show up without hand-painting hundreds of strokes.
+  let autoTimer = null;
+  let autoRate = 1;
+  let autoButton = null;
+  let rateInput = null;
+  let rateLabel = null;
 
   const frames = [];
   const strokes = [];
@@ -39,7 +46,56 @@ export function createDebugPanel({ getUndoInfo, getEngineStats }) {
     spark.width = SPARK_WIDTH;
     spark.height = SPARK_HEIGHT;
     panel.append(textNode, spark);
+    if (paintTestStroke) {
+      const controls = document.createElement('div');
+      controls.className = 'debug-controls';
+      autoButton = document.createElement('button');
+      autoButton.type = 'button';
+      autoButton.textContent = '▶ auto';
+      autoButton.addEventListener('click', () => (autoTimer ? stopAuto() : startAuto(autoRate)));
+      rateInput = document.createElement('input');
+      rateInput.type = 'range';
+      rateInput.min = '1';
+      rateInput.max = '10';
+      rateInput.step = '1';
+      rateInput.value = String(autoRate);
+      rateInput.addEventListener('input', () => {
+        autoRate = Number(rateInput.value);
+        renderAutoControls();
+        // A live rate change retimes a running generator in place.
+        if (autoTimer) startAuto(autoRate);
+      });
+      rateLabel = document.createElement('span');
+      controls.append(autoButton, rateInput, rateLabel);
+      panel.append(controls);
+      renderAutoControls();
+    }
     document.body.append(panel);
+  }
+
+  function renderAutoControls() {
+    if (!rateLabel) return;
+    rateLabel.textContent = `${autoRate}/s`;
+    autoButton.textContent = autoTimer ? '⏸ auto' : '▶ auto';
+  }
+
+  function startAuto(rate) {
+    if (!paintTestStroke || !enabled) return false;
+    const clamped = Math.min(10, Math.max(1, Math.round(Number(rate) || autoRate)));
+    autoRate = clamped;
+    if (rateInput) rateInput.value = String(clamped);
+    if (autoTimer !== null) window.clearInterval(autoTimer);
+    autoTimer = window.setInterval(paintTestStroke, 1000 / clamped);
+    renderAutoControls();
+    return true;
+  }
+
+  function stopAuto() {
+    if (autoTimer !== null) {
+      window.clearInterval(autoTimer);
+      autoTimer = null;
+    }
+    renderAutoControls();
   }
 
   function frameRollup() {
@@ -181,6 +237,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats }) {
     if (!enabled) return;
     enabled = false;
     setDebugTiming(false);
+    stopAuto();
     if (panel) panel.hidden = true;
     if (idleTimer !== null) {
       window.clearInterval(idleTimer);
@@ -209,6 +266,9 @@ export function createDebugPanel({ getUndoInfo, getEngineStats }) {
       toggle() { (enabled ? hide : show)(); return enabled; },
       isEnabled: () => enabled,
       getMetrics,
+      startAuto,
+      stopAuto,
+      isAutoRunning: () => autoTimer !== null,
     },
   };
 }

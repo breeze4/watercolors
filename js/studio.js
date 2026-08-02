@@ -158,6 +158,30 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
       return { count: undoStack.length, bytes };
     },
     getEngineStats: () => engineFor(mainSurface).stats(),
+    // One random wavy stroke through the normal paint path (undo snapshot and
+    // all), for the panel's auto-stroke perf generator. Math.random is fine
+    // here — these are user strokes, not replayed reference geometry.
+    paintTestStroke() {
+      const margin = 24;
+      const spanX = Math.max(60, canvasWidth - margin * 2 - 130);
+      const spanY = Math.max(60, canvasHeight - margin * 2 - 40);
+      const x0 = margin + Math.random() * spanX;
+      const y0 = margin + 20 + Math.random() * spanY;
+      const angle = Math.random() * Math.PI * 2;
+      const length = 70 + Math.random() * 150;
+      const wobble = 8 + Math.random() * 14;
+      const segments = 12;
+      const points = [];
+      for (let seg = 0; seg <= segments; seg += 1) {
+        const along = (seg / segments) * length;
+        points.push({
+          x: x0 + Math.cos(angle) * along + Math.cos(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
+          y: y0 + Math.sin(angle) * along + Math.sin(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
+          p: 0.25 + Math.random() * 0.3,
+        });
+      }
+      paintStroke(points);
+    },
   });
 
   // The sim keeps moving while anything is wet: tick and repaint on animation
