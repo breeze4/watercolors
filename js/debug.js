@@ -522,6 +522,23 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
       viewport: { width: window.innerWidth, height: window.innerHeight },
       grid: { ...stats.grid },
       version: versionTag ? versionTag.textContent.trim() : 'unknown',
+      // Device emulation rewrites the user agent, screen and dpr wholesale —
+      // picking "iPad Pro" in Chrome's device toolbar makes the page report a
+      // full Safari-on-Macintosh string. So the UA cannot be trusted to say
+      // what is really running, and a Chromium session masquerading as Safari
+      // is exactly the kind of thing that poisons a cross-engine comparison.
+      // These are signals emulation does not fake.
+      engine: {
+        // performance.memory is Chromium-only; WebKit does not implement it,
+        // and emulation cannot add an API that is not there.
+        heapApi: Boolean(performance.memory),
+        // Chromium-only surface, absent in Safari and Firefox.
+        uaData: Boolean(navigator.userAgentData),
+        // Not overridden by device emulation, so a phone reporting a
+        // workstation's core count has been emulated on one.
+        cores: navigator.hardwareConcurrency || null,
+        touchPoints: navigator.maxTouchPoints || 0,
+      },
     };
   }
 
