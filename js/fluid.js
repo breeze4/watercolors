@@ -117,7 +117,12 @@ export function setDebugTiming(enabled) {
 }
 
 // One engine per surface, rebuilt when the surface's backing store changes
-// size; the repaint that survives a rebuild is rehydrated from the canvas.
+// size. A rebuild takes the previous engine's densities directly rather than
+// re-reading them from the rendered image: the pixel estimate is lossy, and a
+// window drag rebuilds dozens of times, which used to bleach a painting to
+// bare paper. Pixels are still the source for the region a growing canvas
+// newly reveals, which the previous engine never held (the master buffer keeps
+// that paint, and only the canvas has it).
 export function engineFor(surface) {
   const existing = engines.get(surface);
   const dpr = surface.dpr();
@@ -125,7 +130,10 @@ export function engineFor(surface) {
   const cssHeight = Math.max(1, Math.round(surface.canvas.height / dpr));
   if (existing && existing.cssWidth === cssWidth && existing.cssHeight === cssHeight) return existing;
   const engine = createFluidEngine(surface, cssWidth, cssHeight);
-  if (existing) engine.rehydrateFromCanvas();
+  if (existing) {
+    if (cssWidth > existing.cssWidth || cssHeight > existing.cssHeight) engine.rehydrateFromCanvas();
+    engine.adoptState(existing.exportState());
+  }
   engines.set(surface, engine);
   return engine;
 }
@@ -905,10 +913,12 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     dirty = true;
   }
 
-  // Rebuild deposited pigment from whatever the canvas shows: undo, slot
-  // loads, and resizes restore a dried painting. The estimate un-blends each
-  // pixel from the shaded paper it sits on, so bare grain does not read as
-  // pigment and washes keep their color.
+  // Rebuild deposited pigment from whatever the canvas shows: undo and slot
+  // loads restore a dried painting, because there the pixels genuinely are the
+  // only surviving record. The estimate un-blends each pixel from the shaded
+  // paper it sits on, so bare grain does not read as pigment and washes keep
+  // their color. It is lossy and must never run repeatedly over its own
+  // output — resizes use adoptState instead, which is exact.
   function rehydrateFromCanvas() {
     water.fill(0);
     susDensity.fill(0);
@@ -947,12 +957,68 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     dirty = true;
   }
 
+  // Raw state for a resize rebuild. Deliberately the live arrays, not copies:
+  // the caller reads them once into a fresh engine and the old engine is
+  // dropped immediately after.
+  function exportState() {
+    return {
+      gridWidth, gridHeight, stride, scale,
+      water, susDensity, susR, susG, susB,
+      depDensity, depR, depG, depB,
+      velX, velY, wetMemory,
+    };
+  }
+
+  // Take densities from the previous engine, mapping cells by canvas position
+  // rather than by proportion — a resized canvas is the same sheet of paper
+  // cropped or extended, so paint must keep its place instead of stretching.
+  // When neither grid is capped by MAX_GRID the scales match and this is an
+  // exact 1:1 copy; only crossing the cap resamples, and that happens once
+  // rather than compounding.
+  function adoptState(previous) {
+    const ratio = previous.scale > 0 ? previous.scale / scale : 1;
+    for (let y = 1; y <= gridHeight; y += 1) {
+      const sourceY = Math.round((y - 1) * ratio) + 1;
+      if (sourceY < 1 || sourceY > previous.gridHeight) continue;
+      const sourceRow = sourceY * previous.stride;
+      const row = y * stride;
+      for (let x = 1; x <= gridWidth; x += 1) {
+        const sourceX = Math.round((x - 1) * ratio) + 1;
+        if (sourceX < 1 || sourceX > previous.gridWidth) continue;
+        const from = sourceX + sourceRow;
+        const to = x + row;
+        water[to] = previous.water[from];
+        susDensity[to] = previous.susDensity[from];
+        susR[to] = previous.susR[from];
+        susG[to] = previous.susG[from];
+        susB[to] = previous.susB[from];
+        depDensity[to] = previous.depDensity[from];
+        depR[to] = previous.depR[from];
+        depG[to] = previous.depG[from];
+        depB[to] = previous.depB[from];
+        velX[to] = previous.velX[from];
+        velY[to] = previous.velY[from];
+        wetMemory[to] = previous.wetMemory[from];
+      }
+    }
+    // The adopted state may be wet anywhere, so rebuild the mask over the whole
+    // grid and let it shrink to what is actually active.
+    boxLeft = 1;
+    boxRight = gridWidth;
+    boxTop = 1;
+    boxBottom = gridHeight;
+    updateMask();
+    dirty = true;
+  }
+
   return {
     cssWidth,
     cssHeight,
     gridWidth,
     gridHeight,
     scale,
+    exportState,
+    adoptState,
     beginStroke,
     addStrokePoint,
     endStroke,

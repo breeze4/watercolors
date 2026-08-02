@@ -151,6 +151,28 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   let livePressure = effectivePressure(PRESSURE_DIAL_DEFAULT);
   let tickerHandle = null;
 
+  // Auto strokes hold one color for a run before switching, so a soak reads as
+  // a painting rather than confetti and each color's washes get to mingle.
+  // Mixed tray colors are preferred when the tray has any — they are the
+  // interesting ones — with the palette as the always-available fallback.
+  const AUTO_STROKES_PER_COLOR = 10;
+  let autoColor = null;
+  let autoColorStrokes = 0;
+
+  function autoStrokeColor() {
+    if (autoColor === null || autoColorStrokes >= AUTO_STROKES_PER_COLOR) {
+      const pool = state.tray.length ? state.tray : [...basePalette, ...customPalette];
+      const picked = pool[Math.floor(Math.random() * pool.length)];
+      // Avoid repeating the same color back to back where there is a choice.
+      autoColor = pool.length > 1 && picked === autoColor
+        ? pool[(pool.indexOf(picked) + 1) % pool.length]
+        : picked;
+      autoColorStrokes = 0;
+    }
+    autoColorStrokes += 1;
+    return autoColor || state.color;
+  }
+
   const debugPanel = createDebugPanel({
     getUndoInfo() {
       let bytes = 0;
@@ -162,25 +184,34 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     // all), for the panel's auto-stroke perf generator. Math.random is fine
     // here — these are user strokes, not replayed reference geometry.
     paintTestStroke() {
-      const margin = 24;
-      const spanX = Math.max(60, canvasWidth - margin * 2 - 130);
-      const spanY = Math.max(60, canvasHeight - margin * 2 - 40);
-      const x0 = margin + Math.random() * spanX;
-      const y0 = margin + 20 + Math.random() * spanY;
+      // Centre the stroke on a uniformly-chosen point rather than starting it
+      // there: a start point plus a random heading under-covers whichever edge
+      // the strokes tend to run away from. Ends may cross the edge, which the
+      // stamp loop already clamps, and which is how real strokes behave.
+      const margin = 20;
+      const cx = margin + Math.random() * Math.max(40, canvasWidth - margin * 2);
+      const cy = margin + Math.random() * Math.max(40, canvasHeight - margin * 2);
       const angle = Math.random() * Math.PI * 2;
       const length = 70 + Math.random() * 150;
       const wobble = 8 + Math.random() * 14;
       const segments = 12;
+      const originX = cx - Math.cos(angle) * (length / 2);
+      const originY = cy - Math.sin(angle) * (length / 2);
       const points = [];
       for (let seg = 0; seg <= segments; seg += 1) {
         const along = (seg / segments) * length;
         points.push({
-          x: x0 + Math.cos(angle) * along + Math.cos(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
-          y: y0 + Math.sin(angle) * along + Math.sin(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
+          x: originX + Math.cos(angle) * along + Math.cos(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
+          y: originY + Math.sin(angle) * along + Math.sin(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
           p: 0.25 + Math.random() * 0.3,
         });
       }
+      // Paint in the auto run's current color, then hand the brush back — the
+      // generator should not repaint the user's own swatch selection.
+      const chosen = state.color;
+      state.color = autoStrokeColor();
       paintStroke(points);
+      state.color = chosen;
     },
     // A cleared debug session must start from a genuinely clean slate: the
     // undo stack is dropped too, or its snapshots from the previous run would
