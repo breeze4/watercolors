@@ -130,7 +130,14 @@ function makeChart({ label, format, color = LINE_COLOR, bars = false, series = n
 }
 
 export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke, clearCanvas }) {
+  // Two independent states: `enabled` is debug mode itself (timing and
+  // sampling), `collapsed` is only whether the panel body is showing.
+  // Collapsing must never disturb the running session — closing the panel
+  // used to end it, silently losing the run.
   let enabled = false;
+  let collapsed = false;
+  let launcher = null;
+  let body = null;
   let panel = null;
   let sampleTimer = null;
   let sessionId = null;
@@ -175,6 +182,16 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
 
   function ensurePanel() {
     if (panel) return;
+    // The launcher is what makes closing reversible: it stays put while debug
+    // mode is on, so the panel can always be brought back.
+    launcher = document.createElement('button');
+    launcher.type = 'button';
+    launcher.className = 'debug-launcher';
+    launcher.textContent = '📊 Perf';
+    launcher.setAttribute('aria-label', 'Open performance monitor');
+    launcher.addEventListener('click', expand);
+    document.body.append(launcher);
+
     panel = document.createElement('div');
     panel.className = 'debug-panel';
     const header = document.createElement('div');
@@ -184,8 +201,8 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     const close = document.createElement('button');
     close.type = 'button';
     close.textContent = '×';
-    close.setAttribute('aria-label', 'Close performance monitor');
-    close.addEventListener('click', hide);
+    close.setAttribute('aria-label', 'Collapse performance monitor');
+    close.addEventListener('click', collapse);
     header.append(title, close);
     panel.append(header);
 
@@ -279,6 +296,24 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     reportRow.hidden = !hasBackend;
   }
 
+  function renderVisibility() {
+    if (!panel) return;
+    panel.hidden = !enabled || collapsed;
+    launcher.hidden = !enabled || !collapsed;
+  }
+
+  function collapse() {
+    collapsed = true;
+    renderVisibility();
+  }
+
+  function expand() {
+    collapsed = false;
+    renderVisibility();
+    // Charts skip drawing while collapsed, so catch them up on the way back.
+    if (timeline.length > 0) redraw(timeline[timeline.length - 1]);
+  }
+
   function renderSessionId() {
     if (!sessionNode) return;
     sessionNode.textContent = `Session ${String(sessionId).slice(0, 8)}`;
@@ -368,7 +403,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
   }
 
   function redraw(entry) {
-    if (!panel) return;
+    if (!panel || collapsed) return;
     charts.strokes.draw(timeline.map((s) => s.strokes), `${entry.strokes.toFixed(1)}/s${entry.autoRate ? ' (auto)' : ''}`);
     charts.fps.draw(timeline.map((s) => s.fps), `${entry.fps.toFixed(0)} fps`);
     charts.tick.draw(timeline.map((s) => s.tickMs), `${entry.tickMs.toFixed(1)} ms`);
@@ -520,7 +555,8 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     setDebugTiming(true);
     ensurePanel();
     renderSessionId();
-    panel.hidden = false;
+    collapsed = false;
+    renderVisibility();
     setReportStatus('');
     sampleTimer = window.setInterval(sample, SAMPLE_MS);
     document.addEventListener('visibilitychange', beaconOnHide);
@@ -531,7 +567,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     enabled = false;
     setDebugTiming(false);
     stopAuto();
-    if (panel) panel.hidden = true;
+    renderVisibility();
     if (sampleTimer !== null) {
       window.clearInterval(sampleTimer);
       sampleTimer = null;
@@ -560,6 +596,9 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
       hide,
       toggle() { (enabled ? hide : show)(); return enabled; },
       isEnabled: () => enabled,
+      collapse,
+      expand,
+      isCollapsed: () => collapsed,
       getMetrics,
       startAuto,
       stopAuto,
