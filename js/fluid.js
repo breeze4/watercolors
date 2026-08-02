@@ -116,6 +116,12 @@ export function setDebugTiming(enabled) {
   debugTiming = Boolean(enabled);
 }
 
+// So a caller that needs timing temporarily can hand the switch back the way it
+// found it, instead of silently turning the debug panel's own timing off.
+export function getDebugTiming() {
+  return debugTiming;
+}
+
 // One engine per surface, rebuilt when the surface's backing store changes
 // size. A rebuild takes the previous engine's densities directly rather than
 // re-reading them from the rendered image: the pixel estimate is lossy, and a
@@ -188,7 +194,16 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   const frame = offscreenContext.getImageData(0, 0, gridWidth, gridHeight);
 
   let tickCount = 0;
+  // Owned by the mask and evaporate passes, which count it. Deposition must not
+  // write it: `stamp()` used to increment it once per stamp, so between a
+  // deposit and the next mask pass `wetCells` reported the stamp count under
+  // the wet-cell name — and `wetPct`, the chart that carries the whole
+  // box-versus-wet argument, is derived from it.
   let wetCells = 0;
+  // What that increment was really for: keeping the ticker alive across the few
+  // ticks between a fresh deposit and the pass that counts it. That is an
+  // activity flag, not a measurement, so it is one now.
+  let depositPending = false;
   let maxSpeed = 0;
   // Active bounding box in grid coords (interior cells 1..gridWidth/Height).
   let boxLeft = gridWidth;
@@ -298,7 +313,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
       }
     }
     dirty = true;
-    wetCells += 1;
+    depositPending = true;
     stroke.stamps += 1;
   }
 
@@ -472,9 +487,9 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     stroke = null;
   }
 
-  function strokeFromPath(points, colorHex, hardness, sizeCss, basePressure, water = DEFAULT_WATER) {
+  function strokeFromPath(points, colorHex, hardness, sizeCss, basePressure, water = DEFAULT_WATER, brush = {}) {
     if (!Array.isArray(points) || points.length === 0) return;
-    beginStroke(colorHex, hardness, sizeCss, basePressure, water);
+    beginStroke(colorHex, hardness, sizeCss, basePressure, water, Boolean(brush.deplete), brush.paint ?? 0.5);
     for (const point of points) addStrokePoint(point.x, point.y, point.p);
     endStroke();
   }
@@ -665,6 +680,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
 
   function evaporateAndSettle() {
     wetCells = 0;
+    depositPending = false;
     for (let y = boxTop; y <= boxBottom; y += 1) {
       const row = y * stride;
       for (let x = boxLeft; x <= boxRight; x += 1) {
@@ -748,6 +764,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
       }
     }
     wetCells = wet;
+    depositPending = false;
     if (wet === 0) {
       resetBox();
       return;
@@ -792,7 +809,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   }
 
   function isActive() {
-    return hasBox() && (wetCells > 0 || stroke !== null);
+    return hasBox() && (wetCells > 0 || stroke !== null || depositPending);
   }
 
   // --- Rendering ------------------------------------------------------------
@@ -892,6 +909,16 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     wetMemory.fill(0);
     stroke = null;
     wetCells = 0;
+    depositPending = false;
+    // A reset sheet has no tick history. Both of these steer *which* passes run
+    // on a given tick — `tickCount` through the %8/%4/%3 cadence, `maxSpeed`
+    // through the evaporation interval — so carrying them across a reset makes
+    // the same input produce different pixels depending on what the engine did
+    // beforehand. That silently broke the replayer's documented contract (same
+    // episode, same step, same pixels): rendering one step twice in a row
+    // produced two different images.
+    tickCount = 0;
+    maxSpeed = 0;
     resetBox();
     dirty = true;
     render(true);
@@ -909,6 +936,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     active.fill(0);
     wetMemory.fill(0);
     wetCells = 0;
+    depositPending = false;
     resetBox();
     dirty = true;
   }
@@ -930,6 +958,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     wetMemory.fill(0);
     stroke = null;
     wetCells = 0;
+    depositPending = false;
     resetBox();
     offscreenContext.save();
     offscreenContext.fillStyle = '#fff';

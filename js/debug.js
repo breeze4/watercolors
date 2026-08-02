@@ -147,7 +147,7 @@ function makeChart({ label, format, color = LINE_COLOR, bars = false, series = n
   return { root, draw };
 }
 
-export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke, clearCanvas }) {
+export function createDebugPanel({ getUndoInfo, getEngineStats, getDials, paintTestStroke, clearCanvas }) {
   // Two independent states: `enabled` is debug mode itself (timing and
   // sampling), `collapsed` is only whether the panel body is showing.
   // Collapsing must never disturb the running session — closing the panel
@@ -427,6 +427,11 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
       frames: frames.length,
       elapsedMs: Math.round(elapsed),
       strokesAdded,
+      // Whether this window is a frame-rate measurement at all. Every consumer
+      // was re-deriving the rule from `frames`; carrying it means the answer
+      // lives in one place and an average can exclude idle windows without
+      // knowing the threshold.
+      measured: frames.length >= MIN_MEASURED_FRAMES,
       fps: elapsed > 0 ? (frames.length * 1000) / elapsed : 0,
       tickMs: avg('tickMs'),
       renderMs: avg('renderMs'),
@@ -474,9 +479,11 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
     if (openStroke) openStroke.simMs += tickMs + renderMs;
   }
 
-  function strokeBegin(undoMs) {
+  function strokeBegin(undoMs, inputPath = 'pointer') {
     if (!enabled) return;
-    openStroke = { undoMs, depositMs: 0, simMs: 0 };
+    // Dials are read at the start of the stroke, not at the end: a dial moved
+    // mid-stroke belongs to the next one.
+    openStroke = { undoMs, depositMs: 0, simMs: 0, inputPath, dials: getDials ? getDials() : null };
   }
 
   function addDepositTime(ms) {
@@ -497,6 +504,10 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
       simMs: openStroke.simMs,
       totalMs,
       msPer100: (totalMs / Math.max(1, lengthCss)) * 100,
+      // A scripted stroke cannot accumulate simMs (no frame lands inside it);
+      // a pointer stroke does. Never compare the two.
+      inputPath: openStroke.inputPath,
+      dials: openStroke.dials,
     };
     strokes.push(record);
     trimSent();
@@ -637,11 +648,26 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke,
         // now and nothing here applies to the run that replaced it.
         return { sent: response.ok, id: forSession, reason: 'session closed' };
       }
-      if (response.status === 409 && !full && !options.retry) {
+      if (response.status === 409 && !options.retry) {
         const conflict = await response.json().catch(() => null);
-        return reconcile(conflict && conflict.expected)
-          ? sendReport(reason, { retry: true })
-          : sendReport(reason, { full: true });
+        const expected = conflict && conflict.expected;
+        // Ordinary race: the server holds a prefix this client can still
+        // produce, so re-send from where it actually is.
+        if (reconcile(expected)) return sendReport(reason, { retry: true });
+        // The server holds nothing under this id — the record was deleted
+        // mid-run. A whole-run replace is safe when there is no history to lose.
+        if (expected && expected.samples === 0 && expected.strokes === 0) {
+          return sendReport(reason, { full: true, retry: true });
+        }
+        // Otherwise the server holds records this client can no longer produce
+        // (its display window has moved past them). Replacing would destroy a
+        // run we cannot reproduce, so split instead: both halves survive, and
+        // `continuedFrom` says how they join.
+        const desynced = sessionId;
+        resetSession(desynced);
+        renderSessionId();
+        setReportStatus('Report desynced — continuing under a new session.');
+        return { sent: false, reason: 'desynced', id: desynced };
       }
       if (!response.ok) throw new Error(`status ${response.status}`);
       commitSent(payload, full);

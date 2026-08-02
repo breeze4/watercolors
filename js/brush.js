@@ -21,9 +21,17 @@ export function clampPressure(pressure) {
 // only — callers own undo snapshots, settling ticks, and rendering, because
 // live painting, agent painting, and canonical replay each pace those
 // differently.
-export function paintStrokePath(surface, points, color, hardness, size, basePressure = DEFAULT_PRESSURE, water = DEFAULT_WATER) {
+//
+// `brush` carries the two properties that only a live brush has: `deplete`
+// (the dip empties as the stroke travels) and `paint` (how big that dip is).
+// They default off because the replayer must not have them — episodes author
+// their tapers with per-point pressure and depend on non-depleting strokes for
+// pixel determinism. The studio's own paint path passes them, so a scripted
+// stroke and a hand stroke lay down the same paint; without that, the paint
+// dial measured as having no effect at all while it moves active box area 3.6x.
+export function paintStrokePath(surface, points, color, hardness, size, basePressure = DEFAULT_PRESSURE, water = DEFAULT_WATER, brush = {}) {
   if (!Array.isArray(points) || points.length === 0) return;
   const engine = engineFor(surface);
   const mapped = points.map((point) => ({ ...point, p: clampPressure(point.p ?? basePressure) }));
-  engine.strokeFromPath(mapped, color, hardness, size, clampPressure(basePressure), water);
+  engine.strokeFromPath(mapped, color, hardness, size, clampPressure(basePressure), water, brush);
 }

@@ -7,6 +7,7 @@ import { mixColors, normalizeColor } from './color.js';
 import { clampPressure, paintStrokePath, sizePixels } from './brush.js';
 import { engineFor } from './fluid.js';
 import { createDebugPanel } from './debug.js';
+import { createBench } from './bench.js';
 import { createSlotStore } from './slots.js';
 import { createSoundKit } from './audio.js';
 import { applyBlobShapes, playWash, spawnPaintSpecks, splatNewestSwatch } from './juice.js';
@@ -173,13 +174,51 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     return autoColor || state.color;
   }
 
+  function undoInfo() {
+    let bytes = 0;
+    for (const snapshot of undoStack) bytes += snapshot.width * snapshot.height * 4;
+    return { count: undoStack.length, bytes };
+  }
+
+  // The dials are the workload. Water, pressure, hardness and size each move
+  // sustained cost 1.5-2.4x, and paint moves active box area 3.6x — so two runs
+  // at different dial positions are not comparable, and a report that does not
+  // say where the dials were cannot tell a regression from a nudged slider.
+  function readDials() {
+    return {
+      size: state.size,
+      hardness: state.hardness,
+      pressure: state.pressure,
+      water: state.water,
+      paint: state.paint,
+      color: state.color,
+      pressureEffective: effectivePressure(state.pressure),
+      waterEffective: effectiveWater(state.water),
+    };
+  }
+
+  function applyDials(dials) {
+    if (!dials) return;
+    if (dials.size !== undefined) setSize(dials.size);
+    if (dials.hardness !== undefined) setHardness(dials.hardness);
+    if (dials.pressure !== undefined) setPressure(dials.pressure);
+    if (dials.water !== undefined) setWater(dials.water);
+    if (dials.paint !== undefined) setPaint(dials.paint);
+    if (dials.color !== undefined) state.color = dials.color;
+  }
+
+  // A clean slate that leaves no residue in the undo stack — a benchmark or a
+  // cleared debug session must not inherit snapshots it never allocated.
+  function resetSheet() {
+    clearCanvasWithUndo();
+    undoStack.length = 0;
+    updateUndoButton();
+  }
+
   const debugPanel = createDebugPanel({
-    getUndoInfo() {
-      let bytes = 0;
-      for (const snapshot of undoStack) bytes += snapshot.width * snapshot.height * 4;
-      return { count: undoStack.length, bytes };
-    },
+    getUndoInfo: undoInfo,
     getEngineStats: () => engineFor(mainSurface).stats(),
+    getDials: readDials,
     // One random wavy stroke through the normal paint path (undo snapshot and
     // all), for the panel's auto-stroke perf generator. Math.random is fine
     // here — these are user strokes, not replayed reference geometry.
@@ -198,12 +237,17 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
       const originX = cx - Math.cos(angle) * (length / 2);
       const originY = cy - Math.sin(angle) * (length / 2);
       const points = [];
+      // Vary pressure around the dial rather than over a fixed band. A real
+      // stroke does wander, but the old fixed 0.25-0.55 window meant moving the
+      // pressure dial changed nothing about an auto run — the one control the
+      // generator was most likely to be used to test.
+      const centre = effectivePressure(state.pressure);
       for (let seg = 0; seg <= segments; seg += 1) {
         const along = (seg / segments) * length;
         points.push({
           x: originX + Math.cos(angle) * along + Math.cos(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
           y: originY + Math.sin(angle) * along + Math.sin(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
-          p: 0.25 + Math.random() * 0.3,
+          p: clampPressure(centre * (0.78 + Math.random() * 0.44)),
         });
       }
       // Paint in the auto run's current color, then hand the brush back — the
@@ -213,14 +257,17 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
       paintStroke(points);
       state.color = chosen;
     },
-    // A cleared debug session must start from a genuinely clean slate: the
-    // undo stack is dropped too, or its snapshots from the previous run would
-    // show up as memory the new session never allocated.
-    clearCanvas() {
-      clearCanvasWithUndo();
-      undoStack.length = 0;
-      updateUndoButton();
-    },
+    clearCanvas: resetSheet,
+  });
+
+  // The judge, beside the diagnostic. See js/bench.js for why they are separate.
+  const bench = createBench({
+    getSurface: () => mainSurface,
+    getCanvas: () => canvas,
+    setDials: applyDials,
+    readDials,
+    resetCanvas: resetSheet,
+    getUndoInfo: undoInfo,
   });
 
   // The sim keeps moving while anything is wet: tick and repaint on animation
@@ -234,7 +281,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
         engine.tick(2);
         const renderStarted = performance.now();
         engine.render();
-        debugPanel.recordFrame(renderStarted - tickStarted, performance.now() - renderStarted, engine.stats());
+        debugPanel.recordFrame(renderStarted - tickStarted, performance.now() - renderStarted);
       } else {
         engine.tick(2);
         engine.render();
@@ -735,7 +782,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     state.pendingMixColor = null;
     const undoStarted = debugPanel.enabled() ? performance.now() : 0;
     pushUndoSnapshot();
-    if (debugPanel.enabled()) debugPanel.strokeBegin(performance.now() - undoStarted);
+    if (debugPanel.enabled()) debugPanel.strokeBegin(performance.now() - undoStarted, 'pointer');
     const engine = engineFor(mainSurface);
     engine.beginStroke(state.color, state.hardness, sizePixels[state.size], livePressure, effectiveWater(state.water), true, state.paint);
     engine.addStrokePoint(previousPoint.x, previousPoint.y, livePressure);
@@ -812,9 +859,14 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     const debug = debugPanel.enabled();
     const undoStarted = debug ? performance.now() : 0;
     pushUndoSnapshot();
-    if (debug) debugPanel.strokeBegin(performance.now() - undoStarted);
+    // 'scripted' is not cosmetic. The whole stroke deposits and closes inside
+    // one task, so no animation frame can land between begin and end and the
+    // stroke's `simMs` is structurally zero — where the same stroke driven by
+    // pointer events records ~28 ms. Two numbers, one name; the record has to
+    // say which it is or an analysis will average them together.
+    if (debug) debugPanel.strokeBegin(performance.now() - undoStarted, 'scripted');
     const depositStarted = debug ? performance.now() : 0;
-    paintStrokePath(mainSurface, points, state.color, state.hardness, sizePixels[state.size], effectivePressure(state.pressure), effectiveWater(state.water));
+    paintStrokePath(mainSurface, points, state.color, state.hardness, sizePixels[state.size], effectivePressure(state.pressure), effectiveWater(state.water), { deplete: true, paint: state.paint });
     if (debug) debugPanel.addDepositTime(performance.now() - depositStarted);
     engineFor(mainSurface).render();
     if (debug) debugPanel.strokeEnd(engineFor(mainSurface).lastStroke());
@@ -1124,6 +1176,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     mixColors,
     setSound(enabled) { soundKit.setEnabled(enabled); renderSoundToggle(); },
     debug: debugPanel.api,
+    bench,
     sim: {
       tick(count = 1) {
         const engine = engineFor(mainSurface);
