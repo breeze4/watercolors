@@ -913,11 +913,16 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     });
   }
 
-  // Update nudge: home-screen web apps resume without reloading, so on every
-  // return to the foreground we fetch our own index.html past the cache and
-  // compare its deploy stamp to the running one. Untouched canvas → reload
-  // straight into the new version; painting in progress → offer a toast that
-  // saves to a slot before reloading, so an update can never eat a painting.
+  // Update nudge: home-screen web apps resume without reloading, so we fetch
+  // our own index.html past the cache and compare its deploy stamp to the
+  // running one. Untouched canvas → reload straight into the new version;
+  // painting in progress → offer a toast that saves to a slot before
+  // reloading, so an update can never eat a painting.
+  //
+  // Checked on a timer as well as on foregrounding: a window that never loses
+  // focus never fires visibilitychange, and side-by-side layouts (Chrome split
+  // view, two tiled windows) keep both panes visible indefinitely — so a
+  // foreground-only check could never fire there at all.
   const updateToast = document.querySelector('#update-toast');
   const versionTag = document.querySelector('.version-tag');
   let lastUpdateCheck = 0;
@@ -934,7 +939,9 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
         const fresh = html.match(/version-tag[^>]*>(v[^<]+)</);
         const running = versionTag.textContent.trim();
         if (!fresh || fresh[1] === running) return;
-        if (undoStack.length === 0) {
+        // A recording debug session is measurement in progress: reloading out
+        // from under it would discard the run, so always ask instead.
+        if (undoStack.length === 0 && !debugPanel.enabled()) {
           window.location.reload();
           return;
         }
@@ -948,6 +955,12 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   if (updateToast) {
     updateToast.addEventListener('click', () => {
       updateToast.disabled = true;
+      // Nothing painted means nothing to rescue — saving would only litter the
+      // slots with a blank canvas (the debug-session case reaches here too).
+      if (undoStack.length === 0) {
+        window.location.reload();
+        return;
+      }
       slotStore.save().then((saved) => {
         if (saved) {
           window.location.reload();
@@ -962,6 +975,9 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     if (!document.hidden) checkForUpdate();
   });
   window.setTimeout(checkForUpdate, 8000);
+  // The interval matches the rate limiter inside checkForUpdate, so this and
+  // the foreground trigger can never double-fetch.
+  window.setInterval(checkForUpdate, 60 * 1000);
 
   // Entering or leaving the side-by-side workspace changes the canvas's CSS box
   // without a window resize. The backing store must follow immediately (or
