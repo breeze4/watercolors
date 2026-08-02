@@ -182,6 +182,14 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
       }
       paintStroke(points);
     },
+    // A cleared debug session must start from a genuinely clean slate: the
+    // undo stack is dropped too, or its snapshots from the previous run would
+    // show up as memory the new session never allocated.
+    clearCanvas() {
+      clearCanvasWithUndo();
+      undoStack.length = 0;
+      updateUndoButton();
+    },
   });
 
   // The sim keeps moving while anything is wet: tick and repaint on animation

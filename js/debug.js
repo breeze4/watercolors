@@ -129,7 +129,7 @@ function makeChart({ label, format, color = LINE_COLOR, bars = false, series = n
   return { root, draw };
 }
 
-export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke }) {
+export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke, clearCanvas }) {
   let enabled = false;
   let panel = null;
   let sampleTimer = null;
@@ -144,6 +144,9 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
   let frameBucket = [];
   let openStroke = null;
   let strokeCount = 0;
+  // Strokes finished since the last sample: the load side of every chart, so
+  // a spike in sim time can be read against what was being painted.
+  let strokesThisSample = 0;
   let autoTimer = null;
   let autoRate = 3;
   // Armed by main.js from its one api/health probe. Until then (and forever
@@ -185,27 +188,8 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
     header.append(title, close);
     panel.append(header);
 
-    charts.fps = makeChart({ label: 'Frame rate', format: (v) => `${v.toFixed(0)} fps` });
-    charts.tick = makeChart({ label: 'Simulation time per frame', format: (v) => `${v.toFixed(1)} ms` });
-    charts.render = makeChart({ label: 'Render time per frame', format: (v) => `${v.toFixed(1)} ms` });
-    charts.wet = makeChart({ label: 'Wet area (share of canvas)', format: (v) => `${v.toFixed(0)}%` });
-    charts.passes = makeChart({ label: 'Simulation passes (ms per frame)', format: (v) => `${v.toFixed(1)} ms`, series: PASS_SERIES });
-    charts.stroke = makeChart({ label: 'Stroke cost (ms per 100 px)', format: (v) => `${v.toFixed(1)}`, bars: true });
-    charts.heap = makeChart({ label: 'JS heap memory', format: (v) => `${v.toFixed(0)} MB` });
-
-    panel.append(charts.fps.root, charts.tick.root, charts.render.root, charts.wet.root, charts.passes.root, charts.stroke.root);
-
-    panel.append(section('Latest stroke'));
-    lastStrokeNode = document.createElement('div');
-    lastStrokeNode.className = 'debug-text';
-    lastStrokeNode.textContent = 'No strokes painted yet.';
-    panel.append(lastStrokeNode);
-
-    panel.append(charts.heap.root);
-    memoryNode = document.createElement('div');
-    memoryNode.className = 'debug-text';
-    panel.append(memoryNode);
-
+    // Controls first: the charts run past the bottom of a phone screen, and
+    // the buttons are what you reach for mid-run.
     if (paintTestStroke) {
       panel.append(section('Auto strokes'));
       const controls = document.createElement('div');
@@ -231,6 +215,15 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
       renderAutoControls();
     }
 
+    const sessionRow = document.createElement('div');
+    sessionRow.className = 'debug-controls';
+    const clearButton = document.createElement('button');
+    clearButton.type = 'button';
+    clearButton.textContent = 'Clear session';
+    clearButton.addEventListener('click', clearSession);
+    sessionRow.append(clearButton);
+    panel.append(sessionRow);
+
     reportRow = document.createElement('div');
     reportRow.className = 'debug-controls';
     const reportButton = document.createElement('button');
@@ -243,6 +236,28 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
     panel.append(reportRow);
     renderReportRow();
 
+    charts.strokes = makeChart({ label: 'Strokes added per second', format: (v) => `${v.toFixed(1)}/s`, bars: true, color: '#c07f1d' });
+    charts.fps = makeChart({ label: 'Frame rate', format: (v) => `${v.toFixed(0)} fps` });
+    charts.tick = makeChart({ label: 'Simulation time per frame', format: (v) => `${v.toFixed(1)} ms` });
+    charts.render = makeChart({ label: 'Render time per frame', format: (v) => `${v.toFixed(1)} ms` });
+    charts.wet = makeChart({ label: 'Wet area (share of canvas)', format: (v) => `${v.toFixed(0)}%` });
+    charts.passes = makeChart({ label: 'Simulation passes (ms per frame)', format: (v) => `${v.toFixed(1)} ms`, series: PASS_SERIES });
+    charts.stroke = makeChart({ label: 'Stroke cost (ms per 100 px)', format: (v) => `${v.toFixed(1)}`, bars: true });
+    charts.heap = makeChart({ label: 'JS heap memory', format: (v) => `${v.toFixed(0)} MB` });
+
+    panel.append(charts.strokes.root, charts.fps.root, charts.tick.root, charts.render.root, charts.wet.root, charts.passes.root, charts.stroke.root);
+
+    panel.append(section('Latest stroke'));
+    lastStrokeNode = document.createElement('div');
+    lastStrokeNode.className = 'debug-text';
+    lastStrokeNode.textContent = 'No strokes painted yet.';
+    panel.append(lastStrokeNode);
+
+    panel.append(charts.heap.root);
+    memoryNode = document.createElement('div');
+    memoryNode.className = 'debug-text';
+    panel.append(memoryNode);
+
     document.body.append(panel);
   }
 
@@ -253,7 +268,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
 
   function renderAutoControls() {
     if (!rateLabel) return;
-    rateLabel.textContent = `${autoRate} per second`;
+    rateLabel.textContent = `${autoRate}/sec`;
     autoButton.textContent = autoTimer ? '⏸ Pause' : '▶ Start';
   }
 
@@ -301,6 +316,8 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
     latestStats = stats;
     const avg = (key) => (frames.length ? frames.reduce((sum, frame) => sum + frame[key], 0) / frames.length : 0);
     const gridCells = stats.grid.width * stats.grid.height;
+    const strokesAdded = strokesThisSample;
+    strokesThisSample = 0;
     const entry = {
       t: Math.round((sampledAt - startedAt) / 1000),
       fps: elapsed > 0 ? (frames.length * 1000) / elapsed : 0,
@@ -308,6 +325,10 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
       renderMs: avg('renderMs'),
       wetPct: gridCells > 0 ? (stats.wetCells / gridCells) * 100 : 0,
       heapMB: performance.memory ? performance.memory.usedJSHeapSize / 1048576 : 0,
+      strokes: elapsed > 0 ? (strokesAdded * 1000) / elapsed : 0,
+      // Zero while hand-painting or idle; the set rate while the generator
+      // runs, so the viewer can band the auto-driven stretches.
+      autoRate: autoTimer !== null ? autoRate : 0,
       ...passDelta(stats.passes || {}, frames.length),
     };
     timeline.push(entry);
@@ -320,6 +341,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
 
   function redraw(entry) {
     if (!panel) return;
+    charts.strokes.draw(timeline.map((s) => s.strokes), `${entry.strokes.toFixed(1)}/s${entry.autoRate ? ' (auto)' : ''}`);
     charts.fps.draw(timeline.map((s) => s.fps), `${entry.fps.toFixed(0)} fps`);
     charts.tick.draw(timeline.map((s) => s.tickMs), `${entry.tickMs.toFixed(1)} ms`);
     charts.render.draw(timeline.map((s) => s.renderMs), `${entry.renderMs.toFixed(1)} ms`);
@@ -365,6 +387,7 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
     };
     strokes.push(record);
     if (strokes.length > STROKE_CAP) strokes.splice(0, strokes.length - STROKE_CAP);
+    strokesThisSample += 1;
     openStroke = null;
     if (lastStrokeNode) {
       lastStrokeNode.textContent = `Stroke #${record.n}: ${record.lengthCss.toFixed(0)} px, ${record.stamps} stamps — `
@@ -425,9 +448,9 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
     navigator.sendBeacon('api/debug-stats', JSON.stringify(reportPayload()));
   }
 
-  function show() {
-    if (enabled) return;
-    enabled = true;
+  // Everything that makes a session a session, so starting one and clearing
+  // one can never drift apart.
+  function resetSession() {
     sessionId = makeId();
     startedAt = performance.now();
     startedAtIso = new Date().toISOString();
@@ -437,8 +460,34 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
     timeline.length = 0;
     strokes.length = 0;
     strokeCount = 0;
+    strokesThisSample = 0;
     lastPasses = null;
     frameBucket = [];
+    openStroke = null;
+  }
+
+  // Wipe the paper and start a fresh session id: the next report lands as a
+  // new run rather than extending the one already on the server.
+  function clearSession() {
+    if (!enabled) return null;
+    stopAuto();
+    // Close the outgoing run out to the backend first — clearing starts a new
+    // session, it does not throw away the one just measured. The payload is
+    // built synchronously here, before the reset swaps the id out from under
+    // it. Delete it from the viewer if it was junk.
+    void sendReport('session-cleared');
+    if (clearCanvas) clearCanvas();
+    resetSession();
+    if (lastStrokeNode) lastStrokeNode.textContent = 'No strokes painted yet.';
+    setReportStatus('New session started.');
+    redraw({ t: 0, fps: 0, tickMs: 0, renderMs: 0, wetPct: 0, heapMB: 0, strokes: 0, autoRate: 0 });
+    return sessionId;
+  }
+
+  function show() {
+    if (enabled) return;
+    enabled = true;
+    resetSession();
     setDebugTiming(true);
     ensurePanel();
     panel.hidden = false;
@@ -485,6 +534,8 @@ export function createDebugPanel({ getUndoInfo, getEngineStats, paintTestStroke 
       startAuto,
       stopAuto,
       isAutoRunning: () => autoTimer !== null,
+      clearSession,
+      getSessionId: () => sessionId,
       sendReport: () => sendReport('manual'),
       setBackendAvailable(available) {
         hasBackend = Boolean(available);
