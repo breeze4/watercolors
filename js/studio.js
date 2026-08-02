@@ -6,6 +6,7 @@
 import { mixColors, normalizeColor } from './color.js';
 import { clampPressure, paintStrokePath, sizePixels } from './brush.js';
 import { engineFor } from './fluid.js';
+import { createDebugPanel } from './debug.js';
 import { createSlotStore } from './slots.js';
 import { createSoundKit } from './audio.js';
 import { applyBlobShapes, playWash, spawnPaintSpecks, splatNewestSwatch } from './juice.js';
@@ -150,14 +151,31 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   let livePressure = effectivePressure(PRESSURE_DIAL_DEFAULT);
   let tickerHandle = null;
 
+  const debugPanel = createDebugPanel({
+    getUndoInfo() {
+      let bytes = 0;
+      for (const snapshot of undoStack) bytes += snapshot.width * snapshot.height * 4;
+      return { count: undoStack.length, bytes };
+    },
+    getEngineStats: () => engineFor(mainSurface).stats(),
+  });
+
   // The sim keeps moving while anything is wet: tick and repaint on animation
   // frames until the paper dries, then stop costing anything.
   function startTicker() {
     if (tickerHandle !== null) return;
     const step = () => {
       const engine = engineFor(mainSurface);
-      engine.tick(2);
-      engine.render();
+      if (debugPanel.enabled()) {
+        const tickStarted = performance.now();
+        engine.tick(2);
+        const renderStarted = performance.now();
+        engine.render();
+        debugPanel.recordFrame(renderStarted - tickStarted, performance.now() - renderStarted, engine.stats());
+      } else {
+        engine.tick(2);
+        engine.render();
+      }
       if (engine.isActive() || activePointerId !== null) {
         tickerHandle = window.requestAnimationFrame(step);
       } else {
@@ -652,7 +670,9 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     livePressure = pointerPressure(event);
     previousPoint = { ...eventPoint(event), p: livePressure };
     state.pendingMixColor = null;
+    const undoStarted = debugPanel.enabled() ? performance.now() : 0;
     pushUndoSnapshot();
+    if (debugPanel.enabled()) debugPanel.strokeBegin(performance.now() - undoStarted);
     const engine = engineFor(mainSurface);
     engine.beginStroke(state.color, state.hardness, sizePixels[state.size], livePressure, effectiveWater(state.water), true, state.paint);
     engine.addStrokePoint(previousPoint.x, previousPoint.y, livePressure);
@@ -671,7 +691,13 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     const elapsed = event.timeStamp - lastMoveTime;
     livePressure = velocityAdjusted(pointerPressure(event), distance, elapsed);
     nextPoint.p = livePressure;
-    engineFor(mainSurface).addStrokePoint(nextPoint.x, nextPoint.y, livePressure);
+    if (debugPanel.enabled()) {
+      const depositStarted = performance.now();
+      engineFor(mainSurface).addStrokePoint(nextPoint.x, nextPoint.y, livePressure);
+      debugPanel.addDepositTime(performance.now() - depositStarted);
+    } else {
+      engineFor(mainSurface).addStrokePoint(nextPoint.x, nextPoint.y, livePressure);
+    }
     previousPoint = nextPoint;
     lastMoveTime = event.timeStamp;
     soundKit.brushMove(elapsed > 0 ? distance / elapsed : 0, livePressure, state.hardness);
@@ -687,7 +713,9 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   function endActiveStroke() {
     activePointerId = null;
     previousPoint = null;
-    engineFor(mainSurface).endStroke();
+    const engine = engineFor(mainSurface);
+    engine.endStroke();
+    if (debugPanel.enabled()) debugPanel.strokeEnd(engine.lastStroke());
     renderPressure();
     soundKit.brushEnd();
     hideBrushCursor();
@@ -718,9 +746,15 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     if (!Array.isArray(points) || points.length === 0) return;
     // Painting on the user's canvas ends a pending mix pick and is undoable.
     state.pendingMixColor = null;
+    const debug = debugPanel.enabled();
+    const undoStarted = debug ? performance.now() : 0;
     pushUndoSnapshot();
+    if (debug) debugPanel.strokeBegin(performance.now() - undoStarted);
+    const depositStarted = debug ? performance.now() : 0;
     paintStrokePath(mainSurface, points, state.color, state.hardness, sizePixels[state.size], effectivePressure(state.pressure), effectiveWater(state.water));
+    if (debug) debugPanel.addDepositTime(performance.now() - depositStarted);
     engineFor(mainSurface).render();
+    if (debug) debugPanel.strokeEnd(engineFor(mainSurface).lastStroke());
     startTicker();
   }
 
@@ -1010,6 +1044,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
     getCustomColors: () => [...customPalette],
     mixColors,
     setSound(enabled) { soundKit.setEnabled(enabled); renderSoundToggle(); },
+    debug: debugPanel.api,
     sim: {
       tick(count = 1) {
         const engine = engineFor(mainSurface);
@@ -1054,6 +1089,7 @@ export function createStudio({ onLayoutSettled = () => {} } = {}) {
   slotStore.render();
   updateUndoButton();
   resizeCanvas();
+  if (new URLSearchParams(window.location.search).get('debug') === '1') debugPanel.api.show();
   presentationReady = true;
 
   return {

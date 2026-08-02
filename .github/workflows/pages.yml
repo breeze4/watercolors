@@ -22,6 +22,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+      # Same content-derived stamp remote-bootstrap.sh applies on beebaby:
+      # commit date + short SHA, so both hosts serving the same commit show
+      # the same version and the in-app update nudge fires on real changes.
+      - name: Stamp deploy version
+        run: |
+          stamp="v$(git log -1 --format=%cd --date=format:%Y-%m-%d).$(git rev-parse --short HEAD)"
+          sed -E -i 's/(class="version-tag"[^>]*>)v[^<]*/\1'"$stamp"'/' index.html
+          grep -q "$stamp" index.html
       - name: Configure Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact

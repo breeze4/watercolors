@@ -107,6 +107,15 @@ function buildBristleProfile(seedX, seedY) {
 
 const engines = new WeakMap();
 
+// Debug timing is a module-level switch so every engine (including rebuilds
+// after a resize) sees it without re-plumbing. Off means the tick loop runs
+// exactly as before — no timestamps taken.
+let debugTiming = false;
+
+export function setDebugTiming(enabled) {
+  debugTiming = Boolean(enabled);
+}
+
 // One engine per surface, rebuilt when the surface's backing store changes
 // size; the repaint that survives a rebuild is rehydrated from the canvas.
 export function engineFor(surface) {
@@ -182,6 +191,20 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   let lastTickMs = 0;
 
   let stroke = null;
+  // Closed-stroke summary for the debug panel; cumulative pass times likewise
+  // only advance while debug timing is on.
+  let lastStrokeStats = null;
+  const passMs = { mask: 0, evap: 0, velocity: 0, advect: 0, project: 0 };
+
+  function runPass(name, pass) {
+    if (!debugTiming) {
+      pass();
+      return;
+    }
+    const started = performance.now();
+    pass();
+    passMs[name] += performance.now() - started;
+  }
 
   function resetBox() {
     boxLeft = gridWidth;
@@ -268,6 +291,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     }
     dirty = true;
     wetCells += 1;
+    stroke.stamps += 1;
   }
 
   // Dirty brush: the tip drifts toward the paint it just crossed, so dragging
@@ -319,6 +343,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
       dirX: 1,
       dirY: 0,
       arc: 0,
+      stamps: 0,
       points: [],
       leftover: 0,
       minX: gridWidth,
@@ -435,6 +460,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
       const row = y * stride;
       strokeBuffer.fill(0, stroke.minX + row, stroke.maxX + row + 1);
     }
+    lastStrokeStats = { stamps: stroke.stamps, lengthCss: stroke.arc / scale };
     stroke = null;
   }
 
@@ -742,16 +768,16 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     for (let step = 0; step < count; step += 1) {
       if (!hasBox()) break;
       tickCount += 1;
-      if (tickCount % 8 === 0) updateMask();
+      if (tickCount % 8 === 0) runPass('mask', updateMask);
       if (!hasBox()) break;
       // Lively water dries on the fast cadence; a calm settling wash dries
       // slowly, giving pigment time to drift to the edges before it fixes.
       const evapEvery = maxSpeed < 0.5 ? 6 : 3;
-      if (tickCount % evapEvery === 0) evaporateAndSettle();
-      if (tickCount % 4 === 0) velocityUpdate();
-      else velocitySmooth();
-      advect();
-      if (tickCount % 3 === 1) project();
+      if (tickCount % evapEvery === 0) runPass('evap', evaporateAndSettle);
+      if (tickCount % 4 === 0) runPass('velocity', velocityUpdate);
+      else runPass('velocity', velocitySmooth);
+      runPass('advect', advect);
+      if (tickCount % 3 === 1) runPass('project', project);
       dirty = true;
     }
     lastTickMs = performance.now() - started;
@@ -937,6 +963,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     reset,
     dryAll,
     rehydrateFromCanvas,
+    lastStroke: () => lastStrokeStats,
     stats() {
       return {
         tick: tickCount,
@@ -944,6 +971,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
         activeBox: hasBox() ? { left: boxLeft, right: boxRight, top: boxTop, bottom: boxBottom } : null,
         lastTickMs,
         grid: { width: gridWidth, height: gridHeight },
+        passes: { ...passMs },
       };
     },
   };
