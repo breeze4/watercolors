@@ -172,6 +172,14 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   // recently-wet paper instead of stalling at the first dry cell, which is
   // what lets pigment ride out to a wash's rim and darken it.
   const wetMemory = new Float32Array(cells);
+  // The active cells themselves, row-major, rebuilt whenever the mask or a
+  // deposit rewrites active[]. The passes walk this list instead of the box, so
+  // a grid that is 2% wet costs 2% of the iterations. The price is an indexed
+  // load per cell, which is why this is expected to lose once the canvas is
+  // dense enough that the box was nearly all active anyway.
+  const activeList = new Int32Array(cells);
+  let activeCount = 0;
+  let listValid = false;
 
   // Fixed-seed paper: identical for the user canvas, the reference canvas,
   // and every session, so replay and live painting share one sheet.
@@ -229,11 +237,31 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     passMs[name] += performance.now() - started;
   }
 
+  // Rebuilt lazily: the box walk that fills the list costs one pass, and the
+  // five passes that then walk the list are the ones that run every tick.
+  function ensureActiveList() {
+    if (listValid) return;
+    let count = 0;
+    for (let y = boxTop; y <= boxBottom; y += 1) {
+      const row = y * stride;
+      for (let x = boxLeft; x <= boxRight; x += 1) {
+        const index = x + row;
+        if (active[index] !== 0) {
+          activeList[count] = index;
+          count += 1;
+        }
+      }
+    }
+    activeCount = count;
+    listValid = true;
+  }
+
   function resetBox() {
     boxLeft = gridWidth;
     boxRight = 1;
     boxTop = gridHeight;
     boxBottom = 1;
+    listValid = false;
   }
 
   function growBox(left, right, top, bottom) {
@@ -241,6 +269,8 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     if (right > boxRight) boxRight = Math.min(gridWidth, right);
     if (top < boxTop) boxTop = Math.max(1, top);
     if (bottom > boxBottom) boxBottom = Math.min(gridHeight, bottom);
+    // A deposit lights up cells the current list has never heard of.
+    listValid = false;
   }
 
   function hasBox() {
@@ -498,11 +528,12 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
 
   function velocityUpdate() {
     maxSpeed = 0;
-    for (let y = boxTop; y <= boxBottom; y += 1) {
-      const row = y * stride;
-      for (let x = boxLeft; x <= boxRight; x += 1) {
-        const index = x + row;
-        if (active[index] === 0) continue;
+    ensureActiveList();
+    for (let slot = 0; slot < activeCount; slot += 1) {
+      const index = activeList[slot];
+      const y = (index / stride) | 0;
+      const x = index - y * stride;
+      if (active[index] !== 0) {
         let vx = velX[index];
         let vy = velY[index];
         const left = index - 1;
@@ -546,11 +577,10 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   }
 
   function velocitySmooth() {
-    for (let y = boxTop; y <= boxBottom; y += 1) {
-      const row = y * stride;
-      for (let x = boxLeft; x <= boxRight; x += 1) {
-        const index = x + row;
-        if (active[index] === 0) continue;
+    ensureActiveList();
+    for (let slot = 0; slot < activeCount; slot += 1) {
+      const index = activeList[slot];
+      if (active[index] !== 0) {
         if (water[index] > 0.05) {
           tmpX[index] = velX[index] * 0.2 + (velX[index - 1] + velX[index + 1] + velX[index - stride] + velX[index + stride]) * 0.2;
           tmpY[index] = velY[index] * 0.2 + (velY[index - 1] + velY[index + 1] + velY[index - stride] + velY[index + stride]) * 0.2;
@@ -566,11 +596,12 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   // subtracting what it takes so water and pigment are conserved. In-place and
   // order-dependent like the original — deterministic is what matters.
   function advect() {
-    for (let y = boxTop; y <= boxBottom; y += 1) {
-      const row = y * stride;
-      for (let x = boxLeft; x <= boxRight; x += 1) {
-        const index = x + row;
-        if (active[index] === 0) continue;
+    ensureActiveList();
+    for (let slot = 0; slot < activeCount; slot += 1) {
+      const index = activeList[slot];
+      const y = (index / stride) | 0;
+      const x = index - y * stride;
+      if (active[index] !== 0) {
         const sourceX = x - tmpX[index];
         const sourceY = y - tmpY[index] - GRAVITY_Y * water[index];
         if (sourceX < 1 || sourceX > gridWidth - 1 || sourceY < 1 || sourceY > gridHeight - 1) {
@@ -630,27 +661,24 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   }
 
   function project() {
-    for (let y = boxTop; y <= boxBottom; y += 1) {
-      const row = y * stride;
-      for (let x = boxLeft; x <= boxRight; x += 1) {
-        const index = x + row;
-        if (active[index] === 0) continue;
+    ensureActiveList();
+    for (let slot = 0; slot < activeCount; slot += 1) {
+      const index = activeList[slot];
+      if (active[index] !== 0) {
         tmpY[index] = velX[index - 1] - velX[index + 1] + velY[index - stride] - velY[index + stride];
       }
     }
-    for (let y = boxTop; y <= boxBottom; y += 1) {
-      const row = y * stride;
-      for (let x = boxLeft; x <= boxRight; x += 1) {
-        const index = x + row;
-        if (active[index] === 0) continue;
+    ensureActiveList();
+    for (let slot = 0; slot < activeCount; slot += 1) {
+      const index = activeList[slot];
+      if (active[index] !== 0) {
         tmpX[index] = (tmpY[index] + (tmpY[index - 1] + tmpY[index + 1] + tmpY[index - stride] + tmpY[index + stride]) * 0.25) * 0.25;
       }
     }
-    for (let y = boxTop; y <= boxBottom; y += 1) {
-      const row = y * stride;
-      for (let x = boxLeft; x <= boxRight; x += 1) {
-        const index = x + row;
-        if (active[index] === 0) continue;
+    ensureActiveList();
+    for (let slot = 0; slot < activeCount; slot += 1) {
+      const index = activeList[slot];
+      if (active[index] !== 0) {
         velX[index] -= 0.5 * (tmpX[index + 1] - tmpX[index - 1]) * PROJECT_STRENGTH;
         velY[index] -= 0.5 * (tmpX[index + stride] - tmpX[index - stride]) * PROJECT_STRENGTH;
       }
@@ -681,11 +709,10 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   function evaporateAndSettle() {
     wetCells = 0;
     depositPending = false;
-    for (let y = boxTop; y <= boxBottom; y += 1) {
-      const row = y * stride;
-      for (let x = boxLeft; x <= boxRight; x += 1) {
-        const index = x + row;
-        if (active[index] === 0) continue;
+    ensureActiveList();
+    for (let slot = 0; slot < activeCount; slot += 1) {
+      const index = activeList[slot];
+      if (active[index] !== 0) {
         const amount = water[index];
         if (amount > 0) {
           // The heart of the look: wash boundaries dry far faster than
@@ -735,6 +762,9 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   // Rebuild the activity mask and shrink the bounding box to what is still
   // wet, so an idle painting costs nothing.
   function updateMask() {
+    // The mask rewrites active[] wholesale, so any list built from the old one
+    // is void the moment this runs.
+    listValid = false;
     let left = gridWidth;
     let right = 1;
     let top = gridHeight;
