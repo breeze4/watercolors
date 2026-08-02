@@ -543,6 +543,17 @@ export function createBench({ getSurface, getCanvas, setDials, readDials, resetC
         },
         correctness: {
           ...marks,
+          // Only engine mode can carry a correctness gate. Interaction mode is
+          // paced by the wall clock, so the number of animation frames landing
+          // between two pointer events varies run to run and the physics
+          // legitimately differs — measured across three repetitions of one
+          // build, three different fingerprints. The fingerprint is still
+          // recorded (a wild change is still worth seeing) but comparing it
+          // between candidates would fail every time and mean nothing.
+          comparable: profile.mode !== 'interaction',
+          uncomparableReason: profile.mode === 'interaction'
+            ? 'interaction mode is wall-clock paced, so its physics is not reproducible; run an engine profile for the correctness gate'
+            : null,
           // The curve digest catches an optimization that produces the same
           // final image by a different physical route — drying early, for
           // instance, lands the same pigment from a different wet history.
