@@ -401,6 +401,111 @@ function renderAtLevel(engine, level, flush, surface) {
     return { frames, strokes, curve, settleTicks, settleComplete, engineTicks: engine.stats().tick };
   }
 
+  // Presentation mode: what the screen actually got.
+  //
+  // Engine mode runs a fixed number of frames in a tight loop and measures
+  // compute. That answers "how much work is there" but not "did the frames
+  // arrive", and for a render change those are different questions — drawImage
+  // into a GPU-backed canvas largely enqueues, so compute can fall while the
+  // display still misses its slot.
+  //
+  // So this is paced by requestAnimationFrame for a fixed wall-clock duration
+  // and reports the interval between presented frames. It is wall-clock paced,
+  // which means the physics legitimately differs run to run; the run declares
+  // itself non-comparable rather than failing a fingerprint gate that was never
+  // applicable.
+  async function runPresentationMode(profile, canvas, surface) {
+    const bounds = canvas.getBoundingClientRect();
+    const trace = buildBenchTrace(profile, bounds.width, bounds.height);
+    const engine = engineFor(surface);
+    const dials = readDials();
+    const brush = { deplete: true, paint: dials.paint };
+    const frames = [];
+    const strokes = [];
+    const curve = [];
+    const renderLevel = Number.isInteger(profile.renderLevel) ? profile.renderLevel : RENDER_LEVEL_PRODUCTION;
+    const flush = Boolean(profile.flush);
+    const durationMs = profile.durationMs || 4000;
+
+    const pointsFor = (entry) => entry.points.map((point) => ({
+      x: point.x,
+      y: point.y,
+      p: Math.min(1, Math.max(0.15, dials.pressureEffective * point.jitter)),
+    }));
+
+    const deposit = (entry, index) => {
+      const started = performance.now();
+      paintStrokePath(surface, pointsFor(entry), dials.color, dials.hardness,
+        sizePixels[dials.size], dials.pressureEffective, dials.waterEffective, brush);
+      const depositMs = performance.now() - started;
+      const engineStroke = engine.lastStroke();
+      strokes.push({
+        i: strokes.length,
+        stroke: index + 1,
+        depositMs: +depositMs.toFixed(4),
+        stamps: engineStroke ? engineStroke.stamps : null,
+        lengthCss: engineStroke ? +engineStroke.lengthCss.toFixed(2) : null,
+        msPer100: engineStroke && engineStroke.lengthCss > 0
+          ? +((depositMs / engineStroke.lengthCss) * 100).toFixed(4)
+          : null,
+      });
+    };
+
+    // Lay paint down before measuring: this mode is about the cost of showing a
+    // wet canvas, not the cost of depositing onto a dry one.
+    for (let index = 0; index < trace.length; index += 1) deposit(trace[index], index);
+
+    let topUps = 0;
+    await new Promise((done) => {
+      const started = performance.now();
+      let previous = null;
+      let index = 0;
+      const step = (now) => {
+        // A canvas that dries mid-run stops doing work and the rest of the
+        // measurement is of an idle engine. Top it up so the whole duration
+        // measures the same thing.
+        if (!engine.isActive()) {
+          deposit(trace[topUps % trace.length], topUps % trace.length);
+          topUps += 1;
+        }
+        const tickStarted = performance.now();
+        engine.tick(2);
+        const renderStarted = performance.now();
+        renderAtLevel(engine, renderLevel, flush, surface);
+        const finished = performance.now();
+        const stats = engine.stats();
+        const boxCells = stats.activeBox
+          ? (stats.activeBox.right - stats.activeBox.left + 1) * (stats.activeBox.bottom - stats.activeBox.top + 1)
+          : 0;
+        // The first frame has no predecessor, so it has no interval.
+        if (previous !== null) {
+          frames.push({
+            i: index,
+            phase: 'presentation',
+            intervalMs: +(now - previous).toFixed(3),
+            tickMs: +(renderStarted - tickStarted).toFixed(4),
+            renderMs: +(finished - renderStarted).toFixed(4),
+            frameMs: +(finished - tickStarted).toFixed(4),
+            wetCells: stats.wetCells,
+            boxCells,
+          });
+          curve.push({ t: index, wet: stats.wetCells, box: boxCells });
+          index += 1;
+        }
+        previous = now;
+        if (now - started < durationMs) window.requestAnimationFrame(step);
+        else done();
+      };
+      window.requestAnimationFrame(step);
+    });
+
+    return {
+      frames, strokes, curve, topUps,
+      settleTicks: null, settleComplete: true, engineTicks: engine.stats().tick,
+      comparable: false,
+    };
+  }
+
   async function runInteractionMode(profile, canvas, surface) {
     const box = () => canvas.getBoundingClientRect();
     const bounds = box();
@@ -515,9 +620,10 @@ function renderAtLevel(engine, level, flush, surface) {
       setDials(profile.dials);
       const dials = readDials();
 
-      const result = profile.mode === 'interaction'
-        ? await runInteractionMode(profile, canvas, surface)
-        : await runEngineMode(profile, canvas, surface);
+      let result;
+      if (profile.mode === 'interaction') result = await runInteractionMode(profile, canvas, surface);
+      else if (profile.mode === 'presentation') result = await runPresentationMode(profile, canvas, surface);
+      else result = await runEngineMode(profile, canvas, surface);
 
       const frameMs = result.frames.map((frame) => frame.frameMs).filter((value) => Number.isFinite(value));
       const tickMs = result.frames.map((frame) => frame.tickMs).filter((value) => Number.isFinite(value));
@@ -569,6 +675,27 @@ function renderAtLevel(engine, level, flush, surface) {
           wallMs: +(performance.now() - wallStarted).toFixed(1),
         },
         metrics: {
+          // What the display actually got. The refresh interval is taken as the
+          // median gap between presented frames — the mode of that distribution
+          // *is* the display's period — and anything past 1.5 of those missed a
+          // slot. Counting misses survives a clamped clock; measuring them does
+          // not.
+          ...(() => {
+            const intervals = result.frames.map((frame) => frame.intervalMs).filter(Number.isFinite);
+            if (intervals.length === 0) return {};
+            const sorted = [...intervals].sort((left, right) => left - right);
+            const refreshMs = sorted[sorted.length >> 1];
+            const dropped = intervals.filter((value) => value > refreshMs * 1.5).length;
+            return {
+              intervalMs: quantiles(intervals),
+              presentedFrames: intervals.length,
+              refreshMs: +refreshMs.toFixed(3),
+              refreshHz: refreshMs > 0 ? Math.round(1000 / refreshMs) : null,
+              droppedFrames: dropped,
+              droppedPct: +((dropped / intervals.length) * 100).toFixed(3),
+              topUps: result.topUps ?? null,
+            };
+          })(),
           frameMs: quantiles(frameMs),
           tickMs: quantiles(tickMs),
           renderMs: renderMs.length ? quantiles(renderMs) : { count: 0, collected: false },
@@ -596,10 +723,12 @@ function renderAtLevel(engine, level, flush, surface) {
           // build, three different fingerprints. The fingerprint is still
           // recorded (a wild change is still worth seeing) but comparing it
           // between candidates would fail every time and mean nothing.
-          comparable: profile.mode !== 'interaction',
+          comparable: result.comparable !== false && profile.mode !== 'interaction',
           uncomparableReason: profile.mode === 'interaction'
             ? 'interaction mode is wall-clock paced, so its physics is not reproducible; run an engine profile for the correctness gate'
-            : null,
+            : (result.comparable === false
+              ? 'presentation mode is wall-clock paced and tops the canvas up as it dries, so its physics is not reproducible; the throughput ladder carries the correctness gate'
+              : null),
           // The curve digest catches an optimization that produces the same
           // final image by a different physical route — drying early, for
           // instance, lands the same pigment from a different wet history.
