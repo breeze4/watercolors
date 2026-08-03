@@ -144,7 +144,60 @@ export function engineFor(surface) {
   return engine;
 }
 
-export function createFluidEngine(surface, cssWidth, cssHeight) {
+function createBrowserRenderTarget(surface, gridWidth, gridHeight, cssWidth, cssHeight) {
+  const offscreen = document.createElement('canvas');
+  offscreen.width = gridWidth;
+  offscreen.height = gridHeight;
+  const context = offscreen.getContext('2d', { willReadFrequently: true });
+  context.fillStyle = '#fff';
+  context.fillRect(0, 0, gridWidth, gridHeight);
+  const frame = context.getImageData(0, 0, gridWidth, gridHeight);
+  return {
+    frame,
+    upload(image, left, right, top, bottom) {
+      context.putImageData(image, 0, 0, left - 1, top - 1, right - left + 1, bottom - top + 1);
+    },
+    composite() {
+      const visible = surface.context;
+      visible.save();
+      const dpr = surface.dpr();
+      visible.setTransform(dpr, 0, 0, dpr, 0, 0);
+      visible.imageSmoothingEnabled = true;
+      visible.drawImage(offscreen, 0, 0, cssWidth, cssHeight);
+      visible.restore();
+    },
+    readSurfacePixels() {
+      context.save();
+      context.fillStyle = '#fff';
+      context.fillRect(0, 0, gridWidth, gridHeight);
+      context.drawImage(surface.canvas, 0, 0, gridWidth, gridHeight);
+      context.restore();
+      return context.getImageData(0, 0, gridWidth, gridHeight).data;
+    },
+  };
+}
+
+// A pure typed-array target for Node benchmarks. It executes the same pixel
+// shading code as the browser engine while making upload/composite explicit
+// zero-work adapters. That boundary is the honest limit of a browser-free run.
+export function createMemoryRenderTarget(gridWidth, gridHeight) {
+  const data = new Uint8ClampedArray(gridWidth * gridHeight * 4);
+  data.fill(255);
+  return {
+    frame: {
+      width: gridWidth,
+      height: gridHeight,
+      data,
+    },
+    upload() {},
+    composite() {},
+    readSurfacePixels() {
+      throw new Error('a memory render target cannot rehydrate from a browser canvas');
+    },
+  };
+}
+
+export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
   const scale = Math.min(1, MAX_GRID / Math.max(cssWidth, cssHeight));
   const gridWidth = Math.max(4, Math.round(cssWidth * scale));
   const gridHeight = Math.max(4, Math.round(cssHeight * scale));
@@ -193,13 +246,12 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     }
   }
 
-  const offscreen = document.createElement('canvas');
-  offscreen.width = gridWidth;
-  offscreen.height = gridHeight;
-  const offscreenContext = offscreen.getContext('2d', { willReadFrequently: true });
-  offscreenContext.fillStyle = '#fff';
-  offscreenContext.fillRect(0, 0, gridWidth, gridHeight);
-  const frame = offscreenContext.getImageData(0, 0, gridWidth, gridHeight);
+  const renderTarget = options.renderTarget
+    || (typeof options.createRenderTarget === 'function'
+      ? options.createRenderTarget(gridWidth, gridHeight)
+      : createBrowserRenderTarget(surface, gridWidth, gridHeight, cssWidth, cssHeight));
+  const { frame } = renderTarget;
+  const measure = typeof options.measure === 'function' ? options.measure : null;
 
   let tickCount = 0;
   // Owned by the mask and evaporate passes, which count it. Deposition must not
@@ -228,6 +280,18 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   const passMs = { mask: 0, evap: 0, velocity: 0, advect: 0, project: 0 };
 
   function runPass(name, pass) {
+    if (measure) {
+      measure(name, () => {
+        if (!debugTiming) {
+          pass();
+          return;
+        }
+        const started = performance.now();
+        pass();
+        passMs[name] += performance.now() - started;
+      });
+      return;
+    }
     if (!debugTiming) {
       pass();
       return;
@@ -241,19 +305,23 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
   // five passes that then walk the list are the ones that run every tick.
   function ensureActiveList() {
     if (listValid) return;
-    let count = 0;
-    for (let y = boxTop; y <= boxBottom; y += 1) {
-      const row = y * stride;
-      for (let x = boxLeft; x <= boxRight; x += 1) {
-        const index = x + row;
-        if (active[index] !== 0) {
-          activeList[count] = index;
-          count += 1;
+    const rebuild = () => {
+      let count = 0;
+      for (let y = boxTop; y <= boxBottom; y += 1) {
+        const row = y * stride;
+        for (let x = boxLeft; x <= boxRight; x += 1) {
+          const index = x + row;
+          if (active[index] !== 0) {
+            activeList[count] = index;
+            count += 1;
+          }
         }
       }
-    }
-    activeCount = count;
-    listValid = true;
+      activeCount = count;
+      listValid = true;
+    };
+    if (measure) measure('active-list-rebuild', rebuild);
+    else rebuild();
   }
 
   function resetBox() {
@@ -519,9 +587,19 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
 
   function strokeFromPath(points, colorHex, hardness, sizeCss, basePressure, water = DEFAULT_WATER, brush = {}) {
     if (!Array.isArray(points) || points.length === 0) return;
-    beginStroke(colorHex, hardness, sizeCss, basePressure, water, Boolean(brush.deplete), brush.paint ?? 0.5);
-    for (const point of points) addStrokePoint(point.x, point.y, point.p);
-    endStroke();
+    if (!measure) {
+      beginStroke(colorHex, hardness, sizeCss, basePressure, water, Boolean(brush.deplete), brush.paint ?? 0.5);
+      for (const point of points) addStrokePoint(point.x, point.y, point.p);
+      endStroke();
+      return;
+    }
+    measure('stroke-setup', () => beginStroke(
+      colorHex, hardness, sizeCss, basePressure, water, Boolean(brush.deplete), brush.paint ?? 0.5,
+    ));
+    measure('curve-and-stamp', () => {
+      for (const point of points) addStrokePoint(point.x, point.y, point.p);
+    });
+    measure('stroke-cleanup', endStroke);
   }
 
   // --- Simulation passes ----------------------------------------------------
@@ -829,8 +907,11 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
       // slowly, giving pigment time to drift to the edges before it fixes.
       const evapEvery = maxSpeed < 0.5 ? 6 : 3;
       if (tickCount % evapEvery === 0) runPass('evap', evaporateAndSettle);
-      if (tickCount % 4 === 0) runPass('velocity', velocityUpdate);
-      else runPass('velocity', velocitySmooth);
+      if (tickCount % 4 === 0) {
+        runPass('velocity', measure ? () => measure('update', velocityUpdate) : velocityUpdate);
+      } else {
+        runPass('velocity', measure ? () => measure('smooth', velocitySmooth) : velocitySmooth);
+      }
       runPass('advect', advect);
       if (tickCount % 3 === 1) runPass('project', project);
       dirty = true;
@@ -912,15 +993,15 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
       top = boxTop;
       bottom = boxBottom;
     }
-    renderRegion(left, right, top, bottom);
-    offscreenContext.putImageData(frame, 0, 0, left - 1, top - 1, right - left + 1, bottom - top + 1);
-    const { context } = surface;
-    context.save();
-    const dpr = surface.dpr();
-    context.setTransform(dpr, 0, 0, dpr, 0, 0);
-    context.imageSmoothingEnabled = true;
-    context.drawImage(offscreen, 0, 0, cssWidth, cssHeight);
-    context.restore();
+    if (measure) {
+      measure('shade-pixels', () => renderRegion(left, right, top, bottom));
+      measure('upload-image-data', () => renderTarget.upload(frame, left, right, top, bottom));
+      measure('composite-canvas', () => renderTarget.composite());
+    } else {
+      renderRegion(left, right, top, bottom);
+      renderTarget.upload(frame, left, right, top, bottom);
+      renderTarget.composite();
+    }
     dirty = false;
   }
 
@@ -990,12 +1071,7 @@ export function createFluidEngine(surface, cssWidth, cssHeight) {
     wetCells = 0;
     depositPending = false;
     resetBox();
-    offscreenContext.save();
-    offscreenContext.fillStyle = '#fff';
-    offscreenContext.fillRect(0, 0, gridWidth, gridHeight);
-    offscreenContext.drawImage(surface.canvas, 0, 0, gridWidth, gridHeight);
-    offscreenContext.restore();
-    const pixels = offscreenContext.getImageData(0, 0, gridWidth, gridHeight).data;
+    const pixels = renderTarget.readSurfacePixels();
     for (let y = 1; y <= gridHeight; y += 1) {
       const row = y * stride;
       for (let x = 1; x <= gridWidth; x += 1) {

@@ -173,51 +173,50 @@ export function listProfiles() {
   }));
 }
 
+// Shared by the browser judge and the Node-only core profiler. Keeping trace
+// generation pure means both tools can exercise identical geometry without a
+// browser, a recorded pointer file, or a second workload implementation.
+export function buildBenchTrace(profile, width, height) {
+  const random = makeRandom(profile.seed);
+  const strokes = [];
+  for (let index = 0; index < profile.strokes; index += 1) {
+    let cx;
+    let cy;
+    if (profile.placement === 'corners') {
+      const corner = index % 4;
+      cx = (corner === 0 || corner === 3 ? 0.12 : 0.88) * width;
+      cy = (corner === 0 || corner === 1 ? 0.12 : 0.88) * height;
+    } else {
+      const margin = 20;
+      cx = margin + random() * Math.max(40, width - margin * 2);
+      cy = margin + random() * Math.max(40, height - margin * 2);
+    }
+    const angle = random() * Math.PI * 2;
+    const length = 70 + random() * 150;
+    const wobble = 8 + random() * 14;
+    const segments = 12;
+    const originX = cx - Math.cos(angle) * (length / 2);
+    const originY = cy - Math.sin(angle) * (length / 2);
+    const jitter = 0.78 + random() * 0.44;
+    const points = [];
+    for (let seg = 0; seg <= segments; seg += 1) {
+      const along = (seg / segments) * length;
+      points.push({
+        x: originX + Math.cos(angle) * along + Math.cos(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
+        y: originY + Math.sin(angle) * along + Math.sin(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
+        jitter,
+      });
+    }
+    strokes.push({ points, lengthHint: length });
+  }
+  return strokes;
+}
+
 export function createBench({ getSurface, getCanvas, setDials, readDials, resetCanvas, getUndoInfo }) {
   let running = false;
 
   const sleep = (ms) => new Promise((resolve) => { window.setTimeout(resolve, ms); });
   const nextFrame = () => new Promise((resolve) => { window.requestAnimationFrame(resolve); });
-
-  // A stroke trace is a pure function of (seed, index, geometry). Regenerating
-  // it from the manifest is what makes a stored run reproducible without
-  // checking megabytes of recorded points into the repo.
-  function buildTrace(profile, width, height) {
-    const random = makeRandom(profile.seed);
-    const strokes = [];
-    for (let index = 0; index < profile.strokes; index += 1) {
-      let cx;
-      let cy;
-      if (profile.placement === 'corners') {
-        // Alternate opposite corners: maximum bounding box for minimum wet area.
-        const corner = index % 4;
-        cx = (corner === 0 || corner === 3 ? 0.12 : 0.88) * width;
-        cy = (corner === 0 || corner === 1 ? 0.12 : 0.88) * height;
-      } else {
-        const margin = 20;
-        cx = margin + random() * Math.max(40, width - margin * 2);
-        cy = margin + random() * Math.max(40, height - margin * 2);
-      }
-      const angle = random() * Math.PI * 2;
-      const length = 70 + random() * 150;
-      const wobble = 8 + random() * 14;
-      const segments = 12;
-      const originX = cx - Math.cos(angle) * (length / 2);
-      const originY = cy - Math.sin(angle) * (length / 2);
-      const jitter = 0.78 + random() * 0.44;
-      const points = [];
-      for (let seg = 0; seg <= segments; seg += 1) {
-        const along = (seg / segments) * length;
-        points.push({
-          x: originX + Math.cos(angle) * along + Math.cos(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
-          y: originY + Math.sin(angle) * along + Math.sin(angle + Math.PI / 2) * Math.sin(seg / 2) * wobble,
-          jitter,
-        });
-      }
-      strokes.push({ points, lengthHint: length });
-    }
-    return strokes;
-  }
 
   function passDelta(previous, current) {
     const delta = {};
@@ -252,7 +251,7 @@ export function createBench({ getSurface, getCanvas, setDials, readDials, resetC
   async function runEngineMode(profile, canvas, surface) {
     const width = canvas.getBoundingClientRect().width;
     const height = canvas.getBoundingClientRect().height;
-    const trace = buildTrace(profile, width, height);
+    const trace = buildBenchTrace(profile, width, height);
     const engine = engineFor(surface);
     const dials = readDials();
     const brush = { deplete: true, paint: dials.paint };
@@ -363,7 +362,7 @@ export function createBench({ getSurface, getCanvas, setDials, readDials, resetC
   async function runInteractionMode(profile, canvas, surface) {
     const box = () => canvas.getBoundingClientRect();
     const bounds = box();
-    const trace = buildTrace(profile, bounds.width, bounds.height);
+    const trace = buildBenchTrace(profile, bounds.width, bounds.height);
     const engine = engineFor(surface);
     const dials = readDials();
     const strokes = [];
