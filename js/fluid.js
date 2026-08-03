@@ -207,13 +207,17 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
 
   const water = new Float32Array(cells);
   const susDensity = new Float32Array(cells);
-  const susR = new Float32Array(cells);
-  const susG = new Float32Array(cells);
-  const susB = new Float32Array(cells);
   const depDensity = new Float32Array(cells);
-  const depR = new Float32Array(cells);
-  const depG = new Float32Array(cells);
-  const depB = new Float32Array(cells);
+  // Colour is stored as interleaved triples rather than three parallel arrays.
+  // Nothing in the engine ever reads one channel without the other two, and
+  // advection reads them for a 2×2 block of source cells on every wet cell of
+  // every tick — as three arrays that is six cache lines for twelve floats, and
+  // as interleaved triples it is two. The densities stay as their own arrays,
+  // because those *are* scanned alone, by the mask and by every pixel of the
+  // render, and interleaving them would make those scans stream four times the
+  // bytes to read the same numbers.
+  const susColor = new Float32Array(cells * 3);
+  const depColor = new Float32Array(cells * 3);
   const velX = new Float32Array(cells);
   const velY = new Float32Array(cells);
   const tmpX = new Float32Array(cells);
@@ -402,9 +406,10 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
         const pigment = added * PIGMENT_PER_STAMP * stroke.pigmentScale * (0.1 + 0.9 * load);
         const existing = susDensity[index];
         const total = existing + pigment;
-        susR[index] = (susR[index] * existing + color.r * pigment) / total;
-        susG[index] = (susG[index] * existing + color.g * pigment) / total;
-        susB[index] = (susB[index] * existing + color.b * pigment) / total;
+        const tint = index * 3;
+        susColor[tint] = (susColor[tint] * existing + color.r * pigment) / total;
+        susColor[tint + 1] = (susColor[tint + 1] * existing + color.g * pigment) / total;
+        susColor[tint + 2] = (susColor[tint + 2] * existing + color.b * pigment) / total;
         susDensity[index] = Math.min(DENSITY_MAX * 2, total);
         water[index] += added * wetnessNow * WATER_PER_STAMP;
         active[index] = 1;
@@ -421,8 +426,11 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
     const index = (Math.round(gx) | 0) + (Math.round(gy) | 0) * stride;
     if (index < 0 || index >= cells) return color;
     const sus = susDensity[index] - strokeBuffer[index] * PIGMENT_PER_STAMP;
-    const source = sus > 200 ? { r: susR[index], g: susG[index], b: susB[index], amount: 0.05 }
-      : depDensity[index] > 200 ? { r: depR[index], g: depG[index], b: depB[index], amount: 0.03 }
+    const tint = index * 3;
+    const source = sus > 200
+      ? { r: susColor[tint], g: susColor[tint + 1], b: susColor[tint + 2], amount: 0.05 }
+      : depDensity[index] > 200
+        ? { r: depColor[tint], g: depColor[tint + 1], b: depColor[tint + 2], amount: 0.03 }
         : null;
     if (!source) return color;
     return {
@@ -708,18 +716,23 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
         let take11 = susDensity[i11] * w11;
         const taken = take00 + take10 + take01 + take11;
         if (taken > 0.001) {
-          const r = take00 * susR[i00] + take10 * susR[i10] + take01 * susR[i01] + take11 * susR[i11];
-          const g = take00 * susG[i00] + take10 * susG[i10] + take01 * susG[i01] + take11 * susG[i11];
-          const b = take00 * susB[i00] + take10 * susB[i10] + take01 * susB[i01] + take11 * susB[i11];
+          const c00 = i00 * 3;
+          const c10 = i10 * 3;
+          const c01 = i01 * 3;
+          const c11 = i11 * 3;
+          const r = take00 * susColor[c00] + take10 * susColor[c10] + take01 * susColor[c01] + take11 * susColor[c11];
+          const g = take00 * susColor[c00 + 1] + take10 * susColor[c10 + 1] + take01 * susColor[c01 + 1] + take11 * susColor[c11 + 1];
+          const b = take00 * susColor[c00 + 2] + take10 * susColor[c10 + 2] + take01 * susColor[c01 + 2] + take11 * susColor[c11 + 2];
           susDensity[i00] -= take00;
           susDensity[i10] -= take10;
           susDensity[i01] -= take01;
           susDensity[i11] -= take11;
           const previous = susDensity[index];
           const total = previous + taken;
-          susR[index] = (susR[index] * previous + r) / total;
-          susG[index] = (susG[index] * previous + g) / total;
-          susB[index] = (susB[index] * previous + b) / total;
+          const tint = index * 3;
+          susColor[tint] = (susColor[tint] * previous + r) / total;
+          susColor[tint + 1] = (susColor[tint + 1] * previous + g) / total;
+          susColor[tint + 2] = (susColor[tint + 2] * previous + b) / total;
           susDensity[index] = total;
         }
         const water00 = water[i00] * w00;
@@ -768,16 +781,17 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
     if (moved <= 0) return;
     const depositedCov = coverage(depDensity[index]);
     const movedCov = coverage(moved);
+    const tint = index * 3;
     if (depositedCov > 0) {
       const keep = depositedCov * (1 - movedCov);
       const norm = 1 / (keep + movedCov);
-      depR[index] = (keep * depR[index] + susR[index] * movedCov) * norm;
-      depG[index] = (keep * depG[index] + susG[index] * movedCov) * norm;
-      depB[index] = (keep * depB[index] + susB[index] * movedCov) * norm;
+      depColor[tint] = (keep * depColor[tint] + susColor[tint] * movedCov) * norm;
+      depColor[tint + 1] = (keep * depColor[tint + 1] + susColor[tint + 1] * movedCov) * norm;
+      depColor[tint + 2] = (keep * depColor[tint + 2] + susColor[tint + 2] * movedCov) * norm;
     } else {
-      depR[index] = susR[index];
-      depG[index] = susG[index];
-      depB[index] = susB[index];
+      depColor[tint] = susColor[tint];
+      depColor[tint + 1] = susColor[tint + 1];
+      depColor[tint + 2] = susColor[tint + 2];
     }
     depDensity[index] = Math.min(DENSITY_MAX * 2, depDensity[index] + moved);
     susDensity[index] -= moved;
@@ -818,16 +832,17 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
             const lifted = depDensity[index] * rate;
             const liftedCov = coverage(lifted) ;
             const susCov = coverage(susDensity[index]);
+            const tint = index * 3;
             if (susCov > 0) {
               const keep = susCov * (1 - liftedCov);
               const norm = 1 / (keep + liftedCov);
-              susR[index] = (susR[index] * keep + depR[index] * liftedCov) * norm;
-              susG[index] = (susG[index] * keep + depG[index] * liftedCov) * norm;
-              susB[index] = (susB[index] * keep + depB[index] * liftedCov) * norm;
+              susColor[tint] = (susColor[tint] * keep + depColor[tint] * liftedCov) * norm;
+              susColor[tint + 1] = (susColor[tint + 1] * keep + depColor[tint + 1] * liftedCov) * norm;
+              susColor[tint + 2] = (susColor[tint + 2] * keep + depColor[tint + 2] * liftedCov) * norm;
             } else {
-              susR[index] = depR[index];
-              susG[index] = depG[index];
-              susB[index] = depB[index];
+              susColor[tint] = depColor[tint];
+              susColor[tint + 1] = depColor[tint + 1];
+              susColor[tint + 2] = depColor[tint + 2];
             }
             susDensity[index] += lifted;
             depDensity[index] -= lifted;
@@ -952,15 +967,16 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
         let green = 255 + paperShade;
         let blue = 255 + paperShade;
         let opacity = 1;
+        const tint = index * 3;
         const deposited = depDensity[index];
         if (deposited > 0) {
           const cov = coverage(deposited);
           const keep = opacity * (1 - cov);
           opacity = keep + cov;
           const norm = 1 / opacity;
-          red = (red * keep + (depR[index] + pigmentShade) * cov) * norm;
-          green = (green * keep + (depG[index] + pigmentShade) * cov) * norm;
-          blue = (blue * keep + (depB[index] + pigmentShade) * cov) * norm;
+          red = (red * keep + (depColor[tint] + pigmentShade) * cov) * norm;
+          green = (green * keep + (depColor[tint + 1] + pigmentShade) * cov) * norm;
+          blue = (blue * keep + (depColor[tint + 2] + pigmentShade) * cov) * norm;
         }
         const suspended = susDensity[index];
         if (suspended > 0) {
@@ -968,9 +984,9 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
           const keep = opacity * (1 - cov);
           opacity = keep + cov;
           const norm = 1 / opacity;
-          red = (red * keep + (susR[index] + pigmentShade) * cov) * norm;
-          green = (green * keep + (susG[index] + pigmentShade) * cov) * norm;
-          blue = (blue * keep + (susB[index] + pigmentShade) * cov) * norm;
+          red = (red * keep + (susColor[tint] + pigmentShade) * cov) * norm;
+          green = (green * keep + (susColor[tint + 1] + pigmentShade) * cov) * norm;
+          blue = (blue * keep + (susColor[tint + 2] + pigmentShade) * cov) * norm;
         }
         const offset = ((x - 1) + (y - 1) * gridWidth) * 4;
         data[offset] = red < 0 ? 0 : red > 255 ? 255 : red;
@@ -1083,9 +1099,10 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
         if (cov < 0.03) continue;
         const shade = paper[index] * 100 - 40;
         const keep = 1 - cov;
-        depR[index] = Math.min(255, Math.max(0, (pixels[offset] - bare * keep) / cov - shade));
-        depG[index] = Math.min(255, Math.max(0, (pixels[offset + 1] - bare * keep) / cov - shade));
-        depB[index] = Math.min(255, Math.max(0, (pixels[offset + 2] - bare * keep) / cov - shade));
+        const tint = index * 3;
+        depColor[tint] = Math.min(255, Math.max(0, (pixels[offset] - bare * keep) / cov - shade));
+        depColor[tint + 1] = Math.min(255, Math.max(0, (pixels[offset + 1] - bare * keep) / cov - shade));
+        depColor[tint + 2] = Math.min(255, Math.max(0, (pixels[offset + 2] - bare * keep) / cov - shade));
         depDensity[index] = densityFromCoverage(cov);
       }
     }
@@ -1098,8 +1115,8 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
   function exportState() {
     return {
       gridWidth, gridHeight, stride, scale,
-      water, susDensity, susR, susG, susB,
-      depDensity, depR, depG, depB,
+      water, susDensity, susColor,
+      depDensity, depColor,
       velX, velY, wetMemory,
     };
   }
@@ -1122,15 +1139,17 @@ export function createFluidEngine(surface, cssWidth, cssHeight, options = {}) {
         if (sourceX < 1 || sourceX > previous.gridWidth) continue;
         const from = sourceX + sourceRow;
         const to = x + row;
+        const fromTint = from * 3;
+        const toTint = to * 3;
         water[to] = previous.water[from];
         susDensity[to] = previous.susDensity[from];
-        susR[to] = previous.susR[from];
-        susG[to] = previous.susG[from];
-        susB[to] = previous.susB[from];
+        susColor[toTint] = previous.susColor[fromTint];
+        susColor[toTint + 1] = previous.susColor[fromTint + 1];
+        susColor[toTint + 2] = previous.susColor[fromTint + 2];
         depDensity[to] = previous.depDensity[from];
-        depR[to] = previous.depR[from];
-        depG[to] = previous.depG[from];
-        depB[to] = previous.depB[from];
+        depColor[toTint] = previous.depColor[fromTint];
+        depColor[toTint + 1] = previous.depColor[fromTint + 1];
+        depColor[toTint + 2] = previous.depColor[fromTint + 2];
         velX[to] = previous.velX[from];
         velY[to] = previous.velY[from];
         wetMemory[to] = previous.wetMemory[from];
