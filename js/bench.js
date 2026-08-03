@@ -248,6 +248,46 @@ export function createBench({ getSurface, getCanvas, setDials, readDials, resetC
     for (let guard = 0; guard < 600 && engine.isActive(); guard += 1) await sleep(25);
   }
 
+// The render ablation ladder.
+//
+//   0  simulate only, render() never called
+//   1  + shade pixels into the ImageData
+//   2  + upload the dirty rect to the offscreen canvas
+//   3  + composite to the visible canvas — production
+//
+// Each stage's cost is the difference between two adjacent whole-run totals.
+// Timing them individually does not work on the devices that matter: their
+// clocks are clamped, and drawImage into a GPU-backed canvas largely enqueues
+// work rather than doing it, so a per-frame timer captures the enqueue.
+//
+// The levels are produced by suppressing the two canvas calls the engine's
+// render target makes, for the duration of the render call only. No production
+// engine code changes, and nothing that writes simulation state is touched —
+// shading, upload and composite are all pure output, which is why the deposited
+// pigment fingerprint must come out identical at every level.
+const RENDER_LEVEL_PRODUCTION = 3;
+
+function renderAtLevel(engine, level, flush, surface) {
+  if (level <= 0) return;
+  if (level >= RENDER_LEVEL_PRODUCTION && !flush) { engine.render(); return; }
+
+  const proto = CanvasRenderingContext2D.prototype;
+  const realPut = proto.putImageData;
+  const realDraw = proto.drawImage;
+  if (level < 3) proto.drawImage = function suppressed() {};
+  if (level < 2) proto.putImageData = function suppressed() {};
+  try {
+    engine.render();
+  } finally {
+    proto.putImageData = realPut;
+    proto.drawImage = realDraw;
+  }
+
+  // A synchronous read forces the browser to finish what drawImage queued.
+  // Without it the timer stops at the enqueue and the composite looks free.
+  if (flush && surface && surface.context) surface.context.getImageData(0, 0, 1, 1);
+}
+
   async function runEngineMode(profile, canvas, surface) {
     const width = canvas.getBoundingClientRect().width;
     const height = canvas.getBoundingClientRect().height;
@@ -275,11 +315,13 @@ export function createBench({ getSurface, getCanvas, setDials, readDials, resetC
 
       let strokeTickMs = 0;
       let strokeRenderMs = 0;
+      const renderLevel = Number.isInteger(profile.renderLevel) ? profile.renderLevel : RENDER_LEVEL_PRODUCTION;
+      const flush = Boolean(profile.flush);
       for (let step = 0; step < profile.ticksPerStroke; step += 1) {
         const tickStarted = performance.now();
         engine.tick(2);
         const renderStarted = performance.now();
-        engine.render();
+        renderAtLevel(engine, renderLevel, flush, surface);
         const finished = performance.now();
         const stats = engine.stats();
         const boxCells = stats.activeBox
@@ -504,6 +546,11 @@ export function createBench({ getSurface, getCanvas, setDials, readDials, resetC
           placement: profile.placement || 'random',
           settle: Boolean(profile.settle),
           dials: profile.dials,
+          // A run at anything but the production level measured less drawing
+          // than the app does. Recorded so it can never be quoted as a frame
+          // cost without the qualifier travelling with it.
+          renderLevel: Number.isInteger(profile.renderLevel) ? profile.renderLevel : 3,
+          flush: Boolean(profile.flush),
         },
         // What was actually in force, not what was requested — a dial the studio
         // clamped differently would otherwise be invisible.
